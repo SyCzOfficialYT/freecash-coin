@@ -1,20 +1,26 @@
-version: "3.8"
-
-# Ein Container: Stratum + Dashboard + Auto-Adresse
-# Voraussetzung: freecashd auf dem Host mit RPC 127.0.0.1:8332
-# network_mode: host → ASIC erreicht :3333, Container erreicht Node-RPC
+# Lokal / Portainer – All-in-One (Node + Stratum + Dashboard)
+# Für reines Paste in Portainer: siehe portainer-stack.yml
 
 services:
   freecash-solo:
     build:
       context: .
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/Dockerfile.allinone
     container_name: freecash-solo
     network_mode: host
     volumes:
-      - ./config:/app/config
-      - ./data:/app/data
-      - ./logs:/app/logs
-    restart: unless-stopped
+      - freecash-chain:/opt/newcoin
+      - freecash-app:/app/data
+      - freecash-config:/app/config
     environment:
       - PYTHONUNBUFFERED=1
+      - FCH_RPCUSER=fchrpc
+      - FCH_RPCPASS=FreecashSoloAutoRpc_ChangeMeIfPublic
+      - FCH_RPCPORT=8332
+      - FCH_P2PPORT=8333
+    restart: unless-stopped
+
+volumes:
+  freecash-chain:
+  freecash-app:
+  freecash-config:

@@ -1,32 +1,33 @@
-# Portainer – nur Container starten
+# Portainer – nur YAML, fertig
 
-## Voraussetzung (einmalig auf dem Host)
+## Warum vorher keine Node im Container war
 
-```bash
-# freecashd mit RPC
-./scripts/make-node-conf.sh   # oder manuell ~/.freecash/freecash.conf
-freecashd -daemon
-# warten bis synced
-```
+Stratum braucht `getblocktemplate` / `submitblock` von **freecashd**.  
+Ohne Node im Stack musste die Node separat laufen.  
+Jetzt: **All-in-One** – freecashd + Stratum + Dashboard in **einem** Container.
 
-## Stack
+## So geht’s
 
-1. Repo nach z.B. `/volume1/docker/freecash-coin` klonen
-2. Portainer → Stacks → Compose aus `docker-compose.yml`
-3. Deploy
+1. Portainer → **Stacks** → **Add stack**
+2. Inhalt von [`portainer-stack.yml`](../portainer-stack.yml) einfügen
+3. **Deploy**
 
-**Fertig.** Der Entry-Point:
+Erstes Build lädt das offizielle FreeCash-Release (~700 MB) und kann 5–15 Min dauern.
 
-- legt `config.yaml` an falls nötig
-- ruft `getnewaddress` auf und schreibt die Holding-Adresse
-- startet Stratum (:3333) + Dashboard (:5000)
+## Danach
 
-## ASIC
+| Was | Wo |
+|-----|-----|
+| Dashboard | `http://NAS-IP:5000` |
+| Holding-Adresse | oben im Dashboard (auto) |
+| Stratum | `stratum+tcp://NAS-IP:3333` |
+| ASIC User | `F….nerdq1` (vom Dashboard) |
+| Passwort | `x` |
 
-```
-stratum+tcp://NAS-IP:3333
-Username: <Holding-Adresse vom Dashboard>.nerdq1
-Password: x
-```
+Sync der Chain: bis IBD fertig ist, sind Jobs/Shares eingeschränkt – Terminal zeigt den Status.
 
-Dashboard: `http://NAS-IP:5000` – Holding-Adresse + Live-Terminal.
+## Volumes
+
+- `freecash-chain` → Blockchain + Wallet (nicht löschen!)
+- `freecash-app` → Share-Stats / Terminal-Log
+- `freecash-config` → config.yaml mit Holding-Adresse

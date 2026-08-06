@@ -1,0 +1,38 @@
+# ============================================================
+# FreeCash Solo – ALLES IN EINEM
+# Portainer → Stacks → Add stack → diese Datei einfügen → Deploy
+# Fertig. Kein extra freecashd, kein nano, kein getnewaddress.
+# ============================================================
+#
+# Nach Deploy:
+#   Dashboard:  http://NAS-IP:5000
+#   Stratum:    stratum+tcp://NAS-IP:3333
+#   Username:   <Holding-Adresse vom Dashboard>.nerdq1
+#   Password:   x
+#
+# Hinweis: Erster Blockchain-Sync kann lange dauern.
+# network_mode: host = ASIC findet :3333, Node nutzt :8333
+
+services:
+  freecash-solo:
+    build:
+      context: https://github.com/SyCzOfficialYT/freecash-coin.git#main
+      dockerfile: docker/Dockerfile.allinone
+    container_name: freecash-solo
+    network_mode: host
+    volumes:
+      - freecash-chain:/opt/newcoin
+      - freecash-app:/app/data
+      - freecash-config:/app/config
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FCH_RPCUSER=fchrpc
+      - FCH_RPCPASS=FreecashSoloAutoRpc_ChangeMeIfPublic
+      - FCH_RPCPORT=8332
+      - FCH_P2PPORT=8333
+    restart: unless-stopped
+
+volumes:
+  freecash-chain:
+  freecash-app:
+  freecash-config:
