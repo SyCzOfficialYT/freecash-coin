@@ -1,20 +1,22 @@
-# Fertige Solo-Config (generiert)
-# RPC-Passwort MUSS identisch in ~/.bitcoincashII/bitcoincashII.conf stehen!
+# FreeCash (FCH) Solo – fertige Config
+# payout_address: deine F… Adresse von freecash-cli getnewaddress
 
 rpc:
   host: "127.0.0.1"
-  port: 8342
-  user: "bch2rpc"
-  password: "AcX3p5J_Xk4j-NX4wdSji489z9RQgVzy"
+  port: 8332
+  user: "fchrpc"
+  password: "CTSTnIiXEv9blO04eRKv8je8EUiMyL9M"
   timeout: 30
 
 pool:
-  payout_address: "bitcoincashii:qqssqww4u4rldtl04gshuqvrledjhuwy95ytdyw0xa"
+  # WICHTIG: durch deine echte FreeCash-Adresse ersetzen (beginnt mit F)
+  payout_address: "FCHANGE_ME_GETNEWADDRESS"
+
   stratum_port: 3333
   stratum_host: "0.0.0.0"
   start_difficulty: 256
   job_interval: 25
-  payout_threshold: 50.0
+  payout_threshold: 10.0
 
 monitor:
   host: "0.0.0.0"

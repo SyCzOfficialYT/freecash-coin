@@ -1,26 +1,21 @@
-# Solo Node Configuration (BCH2 – working stack from fch-node)
+# FreeCash (FCH) Solo Node Configuration
 
 rpc:
   host: "127.0.0.1"
-  port: 8342
-  user: "bch2rpc"
+  port: 8332
+  user: "fchrpc"
   password: "CHANGE_ME_SECURE_PASSWORD"
   timeout: 30
 
 pool:
-  # Deine BCH2 Auszahlungsadresse (CashAddr)
-  payout_address: "bitcoincashii:qqssqww4u4rldtl04gshuqvrledjhuwy95ytdyw0xa"
+  # FreeCash-Adresse (beginnt mit F), z.B. von: freecash-cli getnewaddress
+  payout_address: "Fxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
   stratum_port: 3333
   stratum_host: "0.0.0.0"
-
-  # Start-Difficulty – 256 ist gut für NerdQaxe++
   start_difficulty: 256
-
-  # Job-Update Intervall in Sekunden
   job_interval: 25
-
-  payout_threshold: 50.0
+  payout_threshold: 10.0
 
 monitor:
   host: "0.0.0.0"
