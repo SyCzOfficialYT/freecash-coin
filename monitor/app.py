@@ -4,7 +4,6 @@ from flask import Flask, render_template, jsonify
 import yaml, json, requests, time, re, os
 from requests.auth import HTTPBasicAuth
 from pathlib import Path
-from collections import deque
 
 app = Flask(__name__, template_folder="templates")
 ROOT = Path(__file__).resolve().parent.parent
@@ -81,7 +80,6 @@ def read_tail_lines(path: Path, n: int = 80):
     if not path.exists():
         return []
     try:
-        # efficient-ish tail
         with open(path, "rb") as f:
             f.seek(0, os.SEEK_END)
             size = f.tell()
@@ -99,39 +97,26 @@ def read_tail_lines(path: Path, n: int = 80):
 
 
 def load_events(limit: int = 100):
-    """Strukturierte Events + Stratum-Log-Zeilen als Terminal-Zeilen."""
     lines = []
-    # JSONL events (neueste zuerst sammeln, dann umdrehen)
     for raw in read_tail_lines(EVENTS_PATH, limit):
         raw = raw.strip()
         if not raw:
             continue
         try:
             ev = json.loads(raw)
-            ts = ev.get("ts", "")
-            level = ev.get("level", "INFO")
-            msg = ev.get("msg", raw)
-            lines.append({"ts": ts, "level": level, "msg": msg, "src": "event"})
+            lines.append({"ts": ev.get("ts", ""), "level": ev.get("level", "INFO"), "msg": ev.get("msg", raw), "src": "event"})
         except Exception:
             lines.append({"ts": "", "level": "INFO", "msg": raw, "src": "event"})
-
-    # Stratum plain log
     for raw in read_tail_lines(STRATUM_LOG, limit):
         raw = raw.strip()
         if not raw:
             continue
-        # typisches Format: 2026-... [INFO] message
         m = re.match(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}[,\d]*)\s+\[(\w+)\]\s+(.*)$", raw)
         if m:
             lines.append({"ts": m.group(1), "level": m.group(2), "msg": m.group(3), "src": "stratum"})
         else:
             lines.append({"ts": "", "level": "INFO", "msg": raw, "src": "stratum"})
-
-    # sort by ts if present, keep last `limit`
-    def key(x):
-        return x.get("ts") or ""
-
-    lines.sort(key=key)
+    lines.sort(key=lambda x: x.get("ts") or "")
     return lines[-limit:]
 
 
@@ -274,7 +259,6 @@ def api_status():
 
 @app.route("/api/logs")
 def api_logs():
-    """Live terminal: echte Events + Stratum-Log + Snapshot-Stats."""
     stats = load_stats()
     events = load_events(120)
     info = rpc("getblockchaininfo") or {}
@@ -296,5 +280,5 @@ def api_logs():
 
 if __name__ == "__main__":
     host = cfg.get("monitor", {}).get("host", "0.0.0.0")
-    port = int(cfg.get("monitor", {}).get("port", 5000))
+    port = int(cfg.get("monitor", {}).get("port", 5050))
     app.run(host=host, port=port, debug=False)

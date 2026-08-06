@@ -1,17 +1,13 @@
-# FreeCash (FCH) Solo – fertige Config
-# payout_address: deine F… Adresse von freecash-cli getnewaddress
-
+# FreeCash (FCH) Solo
 rpc:
   host: "127.0.0.1"
   port: 8332
   user: "fchrpc"
-  password: "CTSTnIiXEv9blO04eRKv8je8EUiMyL9M"
+  password: "FreecashSoloAutoRpc_ChangeMeIfPublic"
   timeout: 30
 
 pool:
-  # WICHTIG: durch deine echte FreeCash-Adresse ersetzen (beginnt mit F)
   payout_address: "FCHANGE_ME_GETNEWADDRESS"
-
   stratum_port: 3333
   stratum_host: "0.0.0.0"
   start_difficulty: 256
@@ -20,7 +16,7 @@ pool:
 
 monitor:
   host: "0.0.0.0"
-  port: 5000
+  port: 5050
 
 logging:
   level: "INFO"
