@@ -42,7 +42,7 @@
   .round-meta { display:flex; flex-wrap:wrap; gap:1.5rem; margin-bottom:0.85rem; font-size:0.9rem; }
   .round-meta span { color:var(--muted); }
   .progress-track { height:14px; background:var(--panel2); border-radius:999px; overflow:hidden; border:1px solid var(--border); }
-  .progress-fill { height:100%; background:linear-gradient(90deg,#1d4ed8,#3b82f6,#38bdf8); border-radius:999px; transition:width 0.8s ease; position:relative; }
+  .progress-fill { height:100%; background:linear-gradient(90deg,#1d4ed8,#3b82f6,#38bdf8); border-radius:999px; transition:width 0.8s ease; }
   .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1.25rem; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:1.25rem 1.4rem; }
   .card h3 { font-size:0.75rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:0.9rem; font-weight:500; }
@@ -51,13 +51,35 @@
   .stat-row .k { color:var(--muted); }
   .stat-row .v { font-weight:600; font-variant-numeric:tabular-nums; }
   .v.ok { color:var(--green); } .v.bad { color:var(--red); } .v.accent { color:var(--accent); } .v.cyan { color:var(--cyan); }
+  .term-wrap {
+    margin-top: 1.25rem; background: #0a0c10; border: 1px solid var(--border);
+    border-radius: 12px; overflow: hidden;
+  }
+  .term-bar {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 0.55rem 1rem; background: #10141c; border-bottom: 1px solid var(--border);
+    font-size: 0.75rem; color: var(--muted);
+  }
+  .term-bar strong { color: var(--text); font-weight: 600; }
+  #term {
+    height: 280px; overflow-y: auto; padding: 0.75rem 1rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.78rem; line-height: 1.45; white-space: pre-wrap; word-break: break-all;
+  }
+  .t-line { margin: 0; }
+  .t-ts { color: #64748b; }
+  .t-INFO { color: #94a3b8; }
+  .t-OK { color: #22c55e; }
+  .t-WARN { color: #eab308; }
+  .t-ERROR { color: #ef4444; }
+  .t-snap { color: #06b6d4; }
   footer { text-align:center; padding:2rem 1rem; color:var(--muted); font-size:0.8rem; }
 </style>
 </head>
 <body>
 <header>
   <h1><span>FCH</span> Solo Node</h1>
-  <div class="badge {{ 'bad' if not synced else '' }}">
+  <div class="badge {{ 'bad' if not synced else '' }}" id="syncBadge">
     <span style="width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block;"></span>
     {{ 'Synced' if synced else 'Syncing…' }} · {{ connections }} peers
   </div>
@@ -65,55 +87,56 @@
 
 <div class="holding {{ 'ok' if addr_ok else 'bad' }}">
   <div class="label">Holding-Adresse · Coinbase · Exchange-Deposit</div>
-  <div class="addr">{{ payout }}</div>
+  <div class="addr" id="holdingAddr">{{ payout }}</div>
   <div class="hint">
     {% if addr_ok %}
       ✓ {{ addr_msg }} · Block-Rewards landen hier · dieselbe Adresse an der Börse als Einzahlung nutzen
     {% else %}
-      ✗ {{ addr_msg }} · starte <code>python3 scripts/setup_address.py</code> oder <code>./scripts/start.sh</code>
+      ✗ {{ addr_msg }} · Container/entrypoint erzeugt die Adresse automatisch wenn freecashd RPC erreichbar ist
     {% endif %}
   </div>
 </div>
 
 <section class="net-stats">
-  <div class="cell"><div class="label">Height</div><div class="val">{{ height }}</div><div class="sub">chain tip</div></div>
-  <div class="cell"><div class="label">Difficulty</div><div class="val">{{ difficulty_fmt }}</div><div class="sub">network</div></div>
-  <div class="cell"><div class="label">Est. Hashrate</div><div class="val">{{ hashrate_fmt }}</div><div class="sub">from shares</div></div>
-  <div class="cell"><div class="label">Balance</div><div class="val">{{ balance_fmt }}</div><div class="sub">FCH in Wallet</div></div>
-  <div class="cell"><div class="label">Blocks Found</div><div class="val" style="color:var(--green)">{{ blocks_found }}</div><div class="sub">solo</div></div>
-  <div class="cell"><div class="label">Rewards</div><div class="val">{{ rewards_fmt }}</div><div class="sub">lifetime FCH</div></div>
+  <div class="cell"><div class="label">Height</div><div class="val" id="vHeight">{{ height }}</div><div class="sub">chain tip</div></div>
+  <div class="cell"><div class="label">Difficulty</div><div class="val" id="vDiff">{{ difficulty_fmt }}</div><div class="sub">network</div></div>
+  <div class="cell"><div class="label">Est. Hashrate</div><div class="val" id="vHr">{{ hashrate_fmt }}</div><div class="sub">from shares</div></div>
+  <div class="cell"><div class="label">Balance</div><div class="val" id="vBal">{{ balance_fmt }}</div><div class="sub">FCH in Wallet</div></div>
+  <div class="cell"><div class="label">Blocks Found</div><div class="val" id="vBlocks" style="color:var(--green)">{{ blocks_found }}</div><div class="sub">solo</div></div>
+  <div class="cell"><div class="label">Rewards</div><div class="val" id="vRew">{{ rewards_fmt }}</div><div class="sub">lifetime FCH</div></div>
 </section>
 <main>
   <div class="round-card">
-    <h2>Current Round · Block {{ height + 1 if height else '–' }}</h2>
+    <h2>Current Round · Block <span id="vRound">{{ height + 1 if height else '–' }}</span></h2>
     <div class="round-meta">
-      <div><span>Target diff</span> <strong>{{ difficulty_fmt }}</strong></div>
+      <div><span>Target diff</span> <strong id="vDiff2">{{ difficulty_fmt }}</strong></div>
       <div><span>Effort</span> <strong>{{ effort_pct }}%</strong></div>
       <div><span>Est. block</span> <strong>{{ eta_fmt }}</strong></div>
-      <div><span>Best share</span> <strong>{{ best_share_fmt }}</strong></div>
+      <div><span>Best share</span> <strong id="vBest">{{ best_share_fmt }}</strong></div>
     </div>
     <div class="progress-track"><div class="progress-fill" style="width: {{ effort_bar }}%;"></div></div>
   </div>
   <div class="grid2">
     <div class="card">
       <h3>Mining Stats</h3>
-      <div class="stat-row"><span class="k">Accepted shares</span><span class="v ok">{{ shares_ok }}</span></div>
-      <div class="stat-row"><span class="k">Rejected shares</span><span class="v bad">{{ shares_bad }}</span></div>
+      <div class="stat-row"><span class="k">Accepted shares</span><span class="v ok" id="vOk">{{ shares_ok }}</span></div>
+      <div class="stat-row"><span class="k">Rejected shares</span><span class="v bad" id="vBad">{{ shares_bad }}</span></div>
       <div class="stat-row"><span class="k">Reject rate</span><span class="v">{{ reject_pct }}%</span></div>
       <div class="stat-row"><span class="k">Share difficulty</span><span class="v accent">{{ share_diff_fmt }}</span></div>
-      <div class="stat-row"><span class="k">Last share</span><span class="v">{{ last_share_time or '–' }}</span></div>
-      <div class="stat-row"><span class="k">Last hash</span><span class="v cyan" style="font-size:0.8rem">{{ last_share_hash or '–' }}</span></div>
+      <div class="stat-row"><span class="k">Last share</span><span class="v" id="vLastT">{{ last_share_time or '–' }}</span></div>
+      <div class="stat-row"><span class="k">Last hash</span><span class="v cyan" style="font-size:0.8rem" id="vLastH">{{ last_share_hash or '–' }}</span></div>
     </div>
     <div class="card">
       <h3>Wallet / Exchange</h3>
-      <div class="stat-row"><span class="k">Wallet balance</span><span class="v ok">{{ balance_fmt }} FCH</span></div>
-      <div class="stat-row"><span class="k">Lifetime rewards</span><span class="v">{{ rewards_fmt }} FCH</span></div>
+      <div class="stat-row"><span class="k">Wallet balance</span><span class="v ok" id="vBal2">{{ balance_fmt }} FCH</span></div>
+      <div class="stat-row"><span class="k">Lifetime rewards</span><span class="v" id="vRew2">{{ rewards_fmt }} FCH</span></div>
       <div class="stat-row"><span class="k">Mode</span><span class="v accent">SOLO → coinbase</span></div>
       <div class="stat-row"><span class="k">Adresse</span><span class="v {{ 'ok' if addr_ok else 'bad' }}">{{ addr_msg }}</span></div>
       <div class="stat-row"><span class="k">NerdQaxe User</span><span class="v cyan" style="font-size:0.75rem;max-width:55%;text-align:right;word-break:break-all">{{ payout }}.nerdq1</span></div>
     </div>
     <div class="card">
       <h3>Workers</h3>
+      <div id="workersBox">
       {% if workers %}
         {% for name, w in workers.items() %}
         <div class="stat-row">
@@ -125,6 +148,7 @@
       {% else %}
         <div class="stat-row"><span class="k">No workers yet</span><span class="v">–</span></div>
       {% endif %}
+      </div>
       <div class="stat-row" style="margin-top:0.5rem"><span class="k">Stratum</span><span class="v">:3333</span></div>
       <div class="stat-row"><span class="k">Started</span><span class="v">{{ started_at or '–' }}</span></div>
     </div>
@@ -135,11 +159,103 @@
       <div class="stat-row"><span class="k">RPC</span><span class="v">{{ rpc_host }}:{{ rpc_port }}</span></div>
     </div>
   </div>
+
+  <div class="term-wrap">
+    <div class="term-bar">
+      <span><strong>CLI Terminal</strong> · live stratum / shares / jobs</span>
+      <span id="termMeta">poll 2s</span>
+    </div>
+    <div id="term"></div>
+  </div>
 </main>
 <footer>
-  FreeCash Solo · Holding = Coinbase = Exchange-Deposit · Auto-Refresh 8s<br>
-  Aktualisiert {{ now }}
+  FreeCash Solo · Container start = auto address + stratum + dashboard<br>
+  <span id="footerTs">Aktualisiert {{ now }}</span>
 </footer>
-<script>setTimeout(() => location.reload(), 8000);</script>
+<script>
+(function () {
+  const term = document.getElementById('term');
+  let lastKey = '';
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&').replace(/</g,'<').replace(/>/g,'>');
+  }
+
+  function renderEvents(events, snapshot, ts) {
+    const parts = [];
+    if (snapshot) {
+      parts.push(
+        '<div class="t-line t-snap">[' + esc(ts) + '] STATS  ' +
+        'height=' + esc(snapshot.height) +
+        '  ok=' + esc(snapshot.shares_ok) +
+        '  bad=' + esc(snapshot.shares_bad) +
+        '  blocks=' + esc(snapshot.blocks_found) +
+        '  best=' + esc(snapshot.best_share_diff) +
+        '  bal=' + esc(snapshot.balance) +
+        '  last=' + esc(snapshot.last_share_hash || '-') +
+        '</div>'
+      );
+    }
+    (events || []).forEach(function (e) {
+      const lvl = e.level || 'INFO';
+      parts.push(
+        '<div class="t-line t-' + esc(lvl) + '">' +
+        '<span class="t-ts">[' + esc(e.ts || '') + ']</span> ' +
+        lvl.padEnd(5) + ' ' + esc(e.msg) +
+        '</div>'
+      );
+    });
+    const html = parts.join('');
+    if (html === lastKey) return;
+    lastKey = html;
+    const atBottom = term.scrollTop + term.clientHeight >= term.scrollHeight - 40;
+    term.innerHTML = html || '<div class="t-line t-INFO">warte auf Events…</div>';
+    if (atBottom) term.scrollTop = term.scrollHeight;
+  }
+
+  function applyStatus(d) {
+    if (!d) return;
+    if (d.height != null) {
+      document.getElementById('vHeight').textContent = d.height;
+      document.getElementById('vRound').textContent = d.height + 1;
+    }
+    if (d.hashrate_fmt) document.getElementById('vHr').textContent = d.hashrate_fmt;
+    if (d.balance != null) {
+      const b = Number(d.balance).toFixed(4);
+      document.getElementById('vBal').textContent = b;
+      document.getElementById('vBal2').textContent = b + ' FCH';
+    }
+    if (d.stats) {
+      document.getElementById('vOk').textContent = d.stats.shares_ok || 0;
+      document.getElementById('vBad').textContent = d.stats.shares_bad || 0;
+      document.getElementById('vBlocks').textContent = d.stats.blocks_found || 0;
+      document.getElementById('vRew').textContent = Number(d.stats.block_rewards_total || 0).toFixed(4);
+      document.getElementById('vRew2').textContent = Number(d.stats.block_rewards_total || 0).toFixed(4) + ' FCH';
+      document.getElementById('vLastT').textContent = d.stats.last_share_time || '–';
+      document.getElementById('vLastH').textContent = d.stats.last_share_hash || '–';
+    }
+    if (d.holding_address) document.getElementById('holdingAddr').textContent = d.holding_address;
+    if (d.ts) document.getElementById('footerTs').textContent = 'Aktualisiert ' + d.ts;
+    document.getElementById('termMeta').textContent = 'live · ' + (d.ts || '');
+  }
+
+  async function tick() {
+    try {
+      const [logs, status] = await Promise.all([
+        fetch('/api/logs').then(r => r.json()),
+        fetch('/api/status').then(r => r.json()),
+      ]);
+      renderEvents(logs.events, logs.snapshot, logs.ts);
+      applyStatus(status);
+    } catch (e) {
+      document.getElementById('termMeta').textContent = 'poll error';
+    }
+  }
+
+  tick();
+  setInterval(tick, 2000);
+})();
+</script>
 </body>
 </html>
