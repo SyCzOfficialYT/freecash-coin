@@ -1,33 +1,20 @@
 version: "3.8"
 
-# Stratum + Dashboard. Node (bitcoincashIId) läuft typischerweise auf dem Host.
-# network_mode: host → RPC 127.0.0.1 und Stratum :3333 erreichbar für ASIC.
+# Ein Container: Stratum + Dashboard + Auto-Adresse
+# Voraussetzung: freecashd auf dem Host mit RPC 127.0.0.1:8332
+# network_mode: host → ASIC erreicht :3333, Container erreicht Node-RPC
 
 services:
-  stratum:
+  freecash-solo:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    container_name: solo-stratum
+    container_name: freecash-solo
     network_mode: host
     volumes:
       - ./config:/app/config
       - ./data:/app/data
-      - ./stratum:/app/stratum
-    command: ["python3", "stratum/server.py"]
+      - ./logs:/app/logs
     restart: unless-stopped
-
-  monitor:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-    container_name: solo-monitor
-    network_mode: host
-    volumes:
-      - ./config:/app/config
-      - ./data:/app/data
-      - ./monitor:/app/monitor
-    command: ["python3", "monitor/app.py"]
-    depends_on:
-      - stratum
-    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1

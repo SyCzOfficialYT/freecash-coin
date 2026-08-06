@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
-"""FreeCash Solo Dashboard – Holding-Adresse + Mining-Dutch Style"""
+"""FreeCash Solo Dashboard – Holding-Adresse + Live-Terminal"""
 from flask import Flask, render_template, jsonify
-import yaml, json, requests, time, re
+import yaml, json, requests, time, re, os
 from requests.auth import HTTPBasicAuth
 from pathlib import Path
+from collections import deque
 
 app = Flask(__name__, template_folder="templates")
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config" / "config.yaml"
 if not CONFIG_PATH.exists():
     CONFIG_PATH = ROOT / "config" / "config.example.yaml"
+
+EVENTS_PATH = ROOT / "data" / "events.jsonl"
+STRATUM_LOG = ROOT / "data" / "stratum.log"
+STATS_PATH = ROOT / "data" / "stats.json"
 
 
 def load_cfg():
@@ -22,7 +27,6 @@ RPC_HOST = cfg["rpc"]["host"]
 RPC_PORT = cfg["rpc"]["port"]
 RPC_USER = cfg["rpc"]["user"]
 RPC_PASS = cfg["rpc"]["password"]
-STATS_PATH = ROOT / "data" / "stats.json"
 PAYOUT_THRESHOLD = float(cfg.get("pool", {}).get("payout_threshold", 10.0))
 
 
@@ -40,7 +44,6 @@ def rpc(method, params=None):
 
 
 def get_holding_address():
-    """Immer frisch aus config lesen (nach setup_address)."""
     try:
         c = load_cfg()
         return (c.get("pool") or {}).get("payout_address") or ""
@@ -72,6 +75,64 @@ def load_stats():
         "block_rewards_total": 0.0, "workers": {}, "last_share_time": None,
         "last_share_diff": None, "last_share_hash": None, "started_at": None,
     }
+
+
+def read_tail_lines(path: Path, n: int = 80):
+    if not path.exists():
+        return []
+    try:
+        # efficient-ish tail
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            block = 8192
+            data = b""
+            while size > 0 and data.count(b"\n") <= n:
+                step = min(block, size)
+                size -= step
+                f.seek(size)
+                data = f.read(step) + data
+            lines = data.decode(errors="ignore").splitlines()
+            return lines[-n:]
+    except Exception:
+        return []
+
+
+def load_events(limit: int = 100):
+    """Strukturierte Events + Stratum-Log-Zeilen als Terminal-Zeilen."""
+    lines = []
+    # JSONL events (neueste zuerst sammeln, dann umdrehen)
+    for raw in read_tail_lines(EVENTS_PATH, limit):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            ev = json.loads(raw)
+            ts = ev.get("ts", "")
+            level = ev.get("level", "INFO")
+            msg = ev.get("msg", raw)
+            lines.append({"ts": ts, "level": level, "msg": msg, "src": "event"})
+        except Exception:
+            lines.append({"ts": "", "level": "INFO", "msg": raw, "src": "event"})
+
+    # Stratum plain log
+    for raw in read_tail_lines(STRATUM_LOG, limit):
+        raw = raw.strip()
+        if not raw:
+            continue
+        # typisches Format: 2026-... [INFO] message
+        m = re.match(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}[,\d]*)\s+\[(\w+)\]\s+(.*)$", raw)
+        if m:
+            lines.append({"ts": m.group(1), "level": m.group(2), "msg": m.group(3), "src": "stratum"})
+        else:
+            lines.append({"ts": "", "level": "INFO", "msg": raw, "src": "stratum"})
+
+    # sort by ts if present, keep last `limit`
+    def key(x):
+        return x.get("ts") or ""
+
+    lines.sort(key=key)
+    return lines[-limit:]
 
 
 def estimate_hashrate(stats, share_diff):
@@ -154,7 +215,6 @@ def index():
     soft = min(40.0, shares_ok * 0.5) if shares_ok else 0
     effort_bar = max(effort, soft)
     bal = float(balance) if balance is not None else 0.0
-
     holding = get_holding_address()
     addr_ok, addr_msg = validate_holding(holding)
 
@@ -195,6 +255,9 @@ def api_status():
     info = rpc("getblockchaininfo") or {}
     holding = get_holding_address()
     addr_ok, addr_msg = validate_holding(holding)
+    stats = load_stats()
+    share_diff = stats.get("last_share_diff") or cfg["pool"].get("start_difficulty", 256)
+    hr = estimate_hashrate(stats, share_diff)
     return jsonify({
         "synced": not info.get("initialblockdownload", True),
         "height": info.get("blocks"),
@@ -203,8 +266,32 @@ def api_status():
         "holding_address": holding,
         "address_valid": addr_ok,
         "address_status": addr_msg,
-        "stats": load_stats(),
+        "hashrate_fmt": fmt_hashrate(hr),
+        "stats": stats,
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
     })
+
+
+@app.route("/api/logs")
+def api_logs():
+    """Live terminal: echte Events + Stratum-Log + Snapshot-Stats."""
+    stats = load_stats()
+    events = load_events(120)
+    info = rpc("getblockchaininfo") or {}
+    snapshot = {
+        "height": info.get("blocks"),
+        "difficulty": info.get("difficulty"),
+        "shares_ok": stats.get("shares_ok", 0),
+        "shares_bad": stats.get("shares_bad", 0),
+        "blocks_found": stats.get("blocks_found", 0),
+        "best_share_diff": stats.get("best_share_diff", 0),
+        "last_share_time": stats.get("last_share_time"),
+        "last_share_hash": stats.get("last_share_hash"),
+        "workers": list((stats.get("workers") or {}).keys()),
+        "holding": get_holding_address(),
+        "balance": rpc("getbalance"),
+    }
+    return jsonify({"events": events, "snapshot": snapshot, "ts": time.strftime("%Y-%m-%d %H:%M:%S")})
 
 
 if __name__ == "__main__":

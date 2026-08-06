@@ -1,19 +1,32 @@
-# Portainer – FreeCash Solo
+# Portainer – nur Container starten
 
-## Voraussetzung
+## Voraussetzung (einmalig auf dem Host)
 
-`freecashd` läuft auf dem Host mit RPC `127.0.0.1:8332` und deiner `freecash.conf`.
+```bash
+# freecashd mit RPC
+./scripts/make-node-conf.sh   # oder manuell ~/.freecash/freecash.conf
+freecashd -daemon
+# warten bis synced
+```
 
 ## Stack
 
-1. Repo klonen, `config/config.yaml` → echte **F…** Adresse setzen
-2. Portainer → Stack aus `docker-compose.yml`
-3. `network_mode: host` → Stratum :3333, Dashboard :5000
+1. Repo nach z.B. `/volume1/docker/freecash-coin` klonen
+2. Portainer → Stacks → Compose aus `docker-compose.yml`
+3. Deploy
 
-## NerdQaxe
+**Fertig.** Der Entry-Point:
+
+- legt `config.yaml` an falls nötig
+- ruft `getnewaddress` auf und schreibt die Holding-Adresse
+- startet Stratum (:3333) + Dashboard (:5000)
+
+## ASIC
 
 ```
 stratum+tcp://NAS-IP:3333
-Username: FDeineFreeCashAdresse.nerdq1
+Username: <Holding-Adresse vom Dashboard>.nerdq1
 Password: x
 ```
+
+Dashboard: `http://NAS-IP:5000` – Holding-Adresse + Live-Terminal.
