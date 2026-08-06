@@ -1,0 +1,36 @@
+# FreeCash Solo – Dell / Linux PC (nicht Synology)
+# Dashboard: http://IP:5050
+# Stratum:   stratum+tcp://IP:3333
+#
+# Start:
+#   git clone https://github.com/SyCzOfficialYT/freecash-coin.git
+#   cd freecash-coin
+#   docker compose -f docker-compose.dell.yml up -d --build
+#
+# Logs:
+#   docker compose -f docker-compose.dell.yml logs -f
+
+services:
+  freecash-solo:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.allinone
+    container_name: freecash-solo
+    network_mode: host
+    volumes:
+      - freecash-chain:/opt/newcoin
+      - freecash-app:/app/data
+      - freecash-config:/app/config
+    environment:
+      - PYTHONUNBUFFERED=1
+      - FCH_RPCUSER=fchrpc
+      - FCH_RPCPASS=FreecashSoloAutoRpc_ChangeMeIfPublic
+      - FCH_RPCPORT=8332
+      - FCH_P2PPORT=8333
+      - FCH_DASH_PORT=5050
+    restart: unless-stopped
+
+volumes:
+  freecash-chain:
+  freecash-app:
+  freecash-config:
