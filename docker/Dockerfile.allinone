@@ -1,4 +1,4 @@
-# FreeCash Solo ALL-IN-ONE (x86_64 / amd64 only – official freecashd is not ARM)
+# FreeCash Solo ALL-IN-ONE (x86_64 – DS224+ / J4125 OK)
 FROM python:3.12-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -19,22 +19,24 @@ RUN set -eux; \
     arch="$(uname -m)"; \
     echo "Build arch: $arch"; \
     if [ "$arch" != "x86_64" ] && [ "$arch" != "amd64" ]; then \
-      echo "ERROR: Official freecashd is x86_64 only. This NAS/CPU is $arch."; \
-      echo "Use an Intel/AMD Synology or a small x86_64 VPS for the node."; \
+      echo "ERROR: freecashd is x86_64 only (this host is $arch)"; \
       exit 1; \
     fi; \
-    curl -fsSL -o fc.zip \
-      "https://github.com/freecashorg/freecash/releases/download/v1.0.5/fc_miner_docker_1.0.5.zip"; \
+    URL="https://github.com/freecashorg/freecash/releases/download/v1.0.5/fc_miner_docker_1.0.5.zip"; \
+    i=1; \
+    until curl -fL --retry 5 --retry-delay 5 -A "freecash-coin-build" -o fc.zip "$URL"; do \
+      echo "Download attempt $i failed"; \
+      i=$((i+1)); \
+      if [ "$i" -gt 8 ]; then exit 1; fi; \
+      sleep 10; \
+    done; \
     unzip -q fc.zip; \
     tar xf fc_miner_1.0.5/fc.io_1.0.5.tar.gz; \
-    mkdir -p /usr/local/bin /opt/fch/lib; \
-    tar xf 58e660eee10845db7d57aa5446435af651405077ce93350abac33261e37d3969/layer.tar \
-      -C / --wildcards 'usr/local/bin/freecashd'; \
-    tar xf 857b354a787190b399012286ec8ac6553516b44d8da71713a1f72855db0cb5c2/layer.tar \
-      -C / --wildcards 'usr/local/bin/freecash-cli'; \
+    mkdir -p /usr/local/bin /opt/fch/lib /tmp/fc/root; \
+    tar xf 58e660eee10845db7d57aa5446435af651405077ce93350abac33261e37d3969/layer.tar -C / usr/local/bin/freecashd; \
+    tar xf 857b354a787190b399012286ec8ac6553516b44d8da71713a1f72855db0cb5c2/layer.tar -C / usr/local/bin/freecash-cli; \
     chmod +x /usr/local/bin/freecashd /usr/local/bin/freecash-cli; \
     file /usr/local/bin/freecashd; \
-    mkdir -p /tmp/fc/root; \
     tar xf 99126708361e7184a32e1995981ac54af16b2742c64e065175874ecec23f0521/layer.tar -C /tmp/fc/root; \
     cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libboost_*.so* /opt/fch/lib/; \
     cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libdb*.so* /opt/fch/lib/; \

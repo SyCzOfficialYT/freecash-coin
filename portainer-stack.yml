@@ -1,17 +1,7 @@
 # ============================================================
-# FreeCash Solo – ALLES IN EINEM
-# Portainer → Stacks → Add stack → diese Datei einfügen → Deploy
-# Fertig. Kein extra freecashd, kein nano, kein getnewaddress.
+# In Portainer: Build method = WEB EDITOR (nicht Repository)
+# Kompletten Inhalt kopieren → Deploy
 # ============================================================
-#
-# Nach Deploy:
-#   Dashboard:  http://NAS-IP:5000
-#   Stratum:    stratum+tcp://NAS-IP:3333
-#   Username:   <Holding-Adresse vom Dashboard>.nerdq1
-#   Password:   x
-#
-# Hinweis: Erster Blockchain-Sync kann lange dauern.
-# network_mode: host = ASIC findet :3333, Node nutzt :8333
 
 services:
   freecash-solo:
