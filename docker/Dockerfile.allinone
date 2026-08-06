@@ -1,4 +1,4 @@
-# FreeCash Solo ALL-IN-ONE (x86_64 – DS224+ / J4125 OK)
+# FreeCash Solo ALL-IN-ONE (x86_64 – DS224+ J4125 OK)
 FROM python:3.12-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -23,27 +23,32 @@ RUN set -eux; \
       exit 1; \
     fi; \
     URL="https://github.com/freecashorg/freecash/releases/download/v1.0.5/fc_miner_docker_1.0.5.zip"; \
-    i=1; \
-    until curl -fL --retry 5 --retry-delay 5 -A "freecash-coin-build" -o fc.zip "$URL"; do \
-      echo "Download attempt $i failed"; \
-      i=$((i+1)); \
-      if [ "$i" -gt 8 ]; then exit 1; fi; \
-      sleep 10; \
-    done; \
+    curl -fL --retry 8 --retry-delay 5 -A "freecash-coin-build" -o fc.zip "$URL"; \
     unzip -q fc.zip; \
     tar xf fc_miner_1.0.5/fc.io_1.0.5.tar.gz; \
     mkdir -p /usr/local/bin /opt/fch/lib /tmp/fc/root; \
-    tar xf 58e660eee10845db7d57aa5446435af651405077ce93350abac33261e37d3969/layer.tar -C / usr/local/bin/freecashd; \
-    tar xf 857b354a787190b399012286ec8ac6553516b44d8da71713a1f72855db0cb5c2/layer.tar -C / usr/local/bin/freecash-cli; \
+    tar xf 58e660eee10845db7d57aa5446435af651405077ce93350abac33261e37d3969/layer.tar -C /tmp/fc/root; \
+    tar xf 857b354a787190b399012286ec8ac6553516b44d8da71713a1f72855db0cb5c2/layer.tar -C /tmp/fc/root; \
+    tar xf 99126708361e7184a32e1995981ac54af16b2742c64e065175874ecec23f0521/layer.tar -C /tmp/fc/root; \
+    cp /tmp/fc/root/usr/local/bin/freecashd /tmp/fc/root/usr/local/bin/freecash-cli /usr/local/bin/; \
     chmod +x /usr/local/bin/freecashd /usr/local/bin/freecash-cli; \
     file /usr/local/bin/freecashd; \
-    tar xf 99126708361e7184a32e1995981ac54af16b2742c64e065175874ecec23f0521/layer.tar -C /tmp/fc/root; \
-    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libboost_*.so* /opt/fch/lib/; \
-    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libdb*.so* /opt/fch/lib/; \
-    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libcrypto.so.1.0.0 /opt/fch/lib/; \
-    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libssl.so.1.0.0 /opt/fch/lib/; \
-    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libminiupnpc.so* /opt/fch/lib/; \
-    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libevent*.so* /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libboost_system.so.1.58.0 /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libboost_filesystem.so.1.58.0 /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libboost_program_options.so.1.58.0 /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libboost_thread.so.1.58.0 /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libboost_chrono.so.1.58.0 /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libboost_date_time.so.1.58.0 /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libboost_atomic.so.1.58.0 /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libdb_cxx-5.3.so /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libdb-5.3.so /opt/fch/lib/; \
+    cp -a /tmp/fc/root/lib/x86_64-linux-gnu/libcrypto.so.1.0.0 /opt/fch/lib/; \
+    cp -a /tmp/fc/root/lib/x86_64-linux-gnu/libssl.so.1.0.0 /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libminiupnpc.so.10 /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libevent-2.0.so.5* /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libevent_core-2.0.so.5* /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libevent_extra-2.0.so.5* /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libevent_pthreads-2.0.so.5* /opt/fch/lib/; \
     ls -la /opt/fch/lib/; \
     LD_LIBRARY_PATH=/opt/fch/lib /usr/local/bin/freecashd -version; \
     rm -rf /tmp/fc
