@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FCH Solo – FreeCash Node Dashboard</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --card: #1a1d24;
+      --border: #2a2f3a;
+      --text: #e6e8ec;
+      --muted: #8b93a7;
+      --accent: #3b82f6;
+      --green: #22c55e;
+      --orange: #f59e0b;
+      --red: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 1rem;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 1.5rem;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+    h1 { font-size: 1.5rem; font-weight: 600; }
+    .badge {
+      display: inline-block;
+      padding: 0.25rem 0.6rem;
+      border-radius: 999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge.ok { background: rgba(34,197,94,0.15); color: var(--green); }
+    .badge.sync { background: rgba(245,158,11,0.15); color: var(--orange); }
+    .badge.err { background: rgba(239,68,68,0.15); color: var(--red); }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.25rem;
+    }
+    .card .label { color: var(--muted); font-size: 0.8rem; margin-bottom: 0.25rem; }
+    .card .value { font-size: 1.4rem; font-weight: 600; }
+    .card .sub { font-size: 0.75rem; color: var(--muted); margin-top: 0.25rem; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+    }
+    th, td {
+      padding: 0.6rem 0.75rem;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+    }
+    th { color: var(--muted); font-weight: 500; font-size: 0.8rem; }
+    .section-title {
+      font-size: 1rem;
+      font-weight: 600;
+      margin: 1.5rem 0 0.75rem;
+    }
+    .footer {
+      margin-top: 2rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+      text-align: center;
+    }
+    a { color: var(--accent); text-decoration: none; }
+    .refresh { font-size: 0.8rem; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>FCH – FreeCash Solo Node</h1>
+      <div class="refresh">Mining-Dutch style • Auto-refresh 10s</div>
+    </div>
+    <div>
+      {% if stats.error %}
+        <span class="badge err">RPC ERROR</span>
+      {% elif stats.synced %}
+        <span class="badge ok">SYNCED</span>
+      {% else %}
+        <span class="badge sync">SYNCING</span>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if stats.error %}
+    <div class="card" style="border-color: var(--red);">
+      <div class="label">Error</div>
+      <div class="value" style="font-size:1rem;">{{ stats.error }}</div>
+      <div class="sub">Check freecashd is running and RPC credentials are correct.</div>
+    </div>
+  {% else %}
+
+  <!-- Network -->
+  <div class="section-title">Network</div>
+  <div class="grid">
+    <div class="card">
+      <div class="label">Height</div>
+      <div class="value">{{ stats.height or "–" }}</div>
+      <div class="sub">Headers: {{ stats.headers or "–" }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Difficulty</div>
+      <div class="value">{{ "%.4f"|format(stats.difficulty) if stats.difficulty else "–" }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Network Hashrate</div>
+      <div class="value">
+        {% if stats.nethash %}
+          {{ "%.2f"|format(stats.nethash / 1e12) }} TH/s
+        {% else %}–{% endif %}
+      </div>
+      <div class="sub">approx. (last 120 blocks)</div>
+    </div>
+    <div class="card">
+      <div class="label">Connections</div>
+      <div class="value">{{ stats.connections or "–" }}</div>
+    </div>
+    <div class="card">
+      <div class="label">Mempool</div>
+      <div class="value">{{ stats.mempool_size or 0 }}</div>
+      <div class="sub">{{ stats.mempool_bytes or 0 }} bytes</div>
+    </div>
+    <div class="card">
+      <div class="label">Chain</div>
+      <div class="value" style="font-size:1.1rem;">{{ stats.chain or "–" }}</div>
+      <div class="sub">Verification {{ "%.1f"|format((stats.verification_progress or 0)*100) }}%</div>
+    </div>
+  </div>
+
+  <!-- Pool / Mode (SOLO focused) -->
+  <div class="section-title">Pool Information (SOLO)</div>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Mode</th>
+          <th>Hashrate</th>
+          <th>Workers</th>
+          <th>Est. block</th>
+          <th>Effort</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><strong>SOLO</strong></td>
+          <td>– (connect ASIC)</td>
+          <td>0</td>
+          <td>–</td>
+          <td>–</td>
+          <td>›</td>
+        </tr>
+        <tr>
+          <td>Personal</td>
+          <td>–</td>
+          <td>0</td>
+          <td>–</td>
+          <td>–</td>
+          <td>›</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="sub" style="margin-top:0.75rem;">
+      Point your NerdQaxe++ (or any SHA-256 ASIC) to your local stratum once configured.
+      Until then the node is ready and fully synced (when badge shows SYNCED).
+    </div>
+  </div>
+
+  {% if address %}
+  <div class="section-title">Your Address</div>
+  <div class="card">
+    <div class="value" style="font-size:1rem; word-break:break-all;">{{ address }}</div>
+    <div class="sub">Configured payout / coinbase address</div>
+  </div>
+  {% endif %}
+
+  {% endif %}
+
+  <div class="footer">
+    FreeCash Solo Stack • Powered by freecashd + Flask •
+    Refresh interval: 10 s •
+    <a href="/api/stats">API</a>
+  </div>
+
+  <script>
+    setTimeout(() => location.reload(), 10000);
+  </script>
+</body>
+</html>
