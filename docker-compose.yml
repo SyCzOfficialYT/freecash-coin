@@ -1,60 +1,33 @@
 version: "3.8"
 
+# Stratum + Dashboard. Node (bitcoincashIId) läuft typischerweise auf dem Host.
+# network_mode: host → RPC 127.0.0.1 und Stratum :3333 erreichbar für ASIC.
+
 services:
-  freecashd:
-    # Official / community Docker images for FreeCash are limited.
-    # Preferred: build from source or use the released docker packages from freecashorg.
-    # Placeholder image – replace with real freecash image when available or build yourself.
-    image: freecashorg/freecash:latest   # adjust if you have a local/custom image
-    container_name: freecash-node
-    restart: unless-stopped
+  stratum:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: solo-stratum
+    network_mode: host
     volumes:
-      - ${NODE_DATA:-./data/freecash}:/data
-      - ./config/freecash.conf:/data/freecash.conf:ro
-    ports:
-      - "8333:8333"          # P2P
-      - "127.0.0.1:8332:8332" # RPC – localhost only for safety
-    command: >
-      freecashd
-      -datadir=/data
-      -conf=/data/freecash.conf
-      -printtoconsole
-      -server=1
-      -listen=1
-      -txindex=1
-    healthcheck:
-      test: ["CMD", "freecash-cli", "-datadir=/data", "getblockchaininfo"]
-      interval: 60s
-      timeout: 10s
-      retries: 5
-      start_period: 120s
-    networks:
-      - freecash-net
-
-  dashboard:
-    build: ./dashboard
-    container_name: freecash-dashboard
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./stratum:/app/stratum
+    command: ["python3", "stratum/server.py"]
     restart: unless-stopped
-    ports:
-      - "${DASHBOARD_PORT:-8080}:8080"
-    environment:
-      - RPC_HOST=freecashd
-      - RPC_PORT=8332
-      - RPC_USER=${RPC_USER:-freecashrpc}
-      - RPC_PASSWORD=${RPC_PASSWORD}
-      - FCH_ADDRESS=${FCH_ADDRESS:-}
-      - SECRET_KEY=${DASHBOARD_SECRET_KEY:-change-me}
+
+  monitor:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    container_name: solo-monitor
+    network_mode: host
+    volumes:
+      - ./config:/app/config
+      - ./data:/app/data
+      - ./monitor:/app/monitor
+    command: ["python3", "monitor/app.py"]
     depends_on:
-      freecashd:
-        condition: service_healthy
-    networks:
-      - freecash-net
-
-  # Optional stratum service – enable when you have a working FCH stratum binary
-  # stratum:
-  #   image: your-fch-stratum:latest
-  #   ...
-
-networks:
-  freecash-net:
-    driver: bridge
+      - stratum
+    restart: unless-stopped

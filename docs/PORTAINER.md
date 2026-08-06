@@ -1,35 +1,31 @@
-# Portainer Deployment (NAS)
+# Portainer – Stratum + Dashboard
 
-## 1. Prepare data directory
+## Voraussetzung
 
-On your NAS create a persistent folder, e.g.:
+`bitcoincashIId` läuft auf dem NAS/Host mit RPC auf `127.0.0.1:8342` (siehe README).
 
-- Synology: `/volume1/docker/freecash/data`
-- Unraid: `/mnt/user/appdata/freecash/data`
-- TrueNAS: `/mnt/tank/apps/freecash/data`
+## Stack anlegen
 
-Make sure the user running Docker can write to it.
+1. Repo auf dem NAS klonen, z. B. `/volume1/docker/freecash-coin`
+2. `cp config/config.example.yaml config/config.yaml` und Passwort + Adresse setzen
+3. Portainer → Stacks → Add stack
+4. Compose aus `docker-compose.yml` einfügen (Pfad zu Volumes anpassen falls nötig)
+5. Deploy
 
-## 2. Create stack in Portainer
+Beide Services nutzen `network_mode: host`:
 
-1. Portainer → Stacks → Add stack
-2. Name: `freecash-solo`
-3. Paste the content of `docker-compose.yml` (or upload the file)
-4. Under Environment variables add the values from `.env.example` (especially `RPC_PASSWORD` and `NODE_DATA`)
-5. Deploy the stack
+- Stratum lauscht auf Host-Port **3333**
+- Dashboard auf **5000**
+- RPC erreichbar unter 127.0.0.1:8342
 
-## 3. First start
+## NerdQaxe
 
-- The node will start syncing. This can take hours/days depending on hardware and network.
-- Watch logs: Portainer → Containers → freecash-node → Logs
-- Dashboard becomes available at `http://NAS-IP:8080` once the container is healthy.
+```
+stratum+tcp://NAS-IP:3333
+Username: bitcoincashii:DEINE_ADRESSE.nerdq1
+Password: x   # oder d=256
+```
 
-## 4. Security
+## Logs
 
-- RPC is bound to `127.0.0.1` on the host by default.
-- Do **not** publish 8332 to the public internet.
-- Change `RPC_PASSWORD` to a long random string.
-
-## 5. Updates
-
-Pull new images / rebuild dashboard when you update the repo, then recreate the stack.
+Portainer → Container → Logs (ACCEPT share … = funktioniert).

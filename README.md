@@ -1,99 +1,112 @@
 # freecash-coin
 
-**Production-oriented FreeCash (FCH) Solo Mining Stack for Docker / Portainer on NAS**
+**Runnable Solo-Mining Stack** – portiert aus dem funktionierenden [fch-node](https://github.com/SyCzOfficialYT/fch-node) (Branch `Test`).
 
-True solo mining with your own node + ASIC (NerdQaxe++ and any SHA-256 ASIC).
+Dein NerdQaxe++ bekommt Shares. Lokaler Stratum + Mining-Dutch-Style Dashboard.
 
-When you run your own full node + stratum, **every valid block you find is 100% yours**. No pool operator, no shared shares.
-
----
-
-## Why own node?
-
-- Multiple miners on a public pool = your hashrate competes for the same shares.
-- Own node + SOLO stratum = your ASIC works only for **your** coinbase address.
-- FreeCash uses SHA-256 → any BTC/BCH ASIC works (including NerdQaxe++ ~4.8 TH/s).
-
-Block time ~1 minute, current reward ~8.19 FCH (+ fees). Difficulty is low enough that home ASICs have a realistic chance of finding blocks.
+> Aktuell auf **BCH2 (Bitcoin Cash II)** ausgelegt – exakt der Code, der bei dir Shares liefert.  
+> FreeCash (FCH) kann später mit denselben Dateien umgestellt werden (RPC/Ports/Adresse/Coinbase-Tag).
 
 ---
 
-## Architecture
+## Architektur
 
 ```
-[NerdQaxe++ ASIC] 
-        │ stratum+tcp
-        ▼
-[Stratum / Solo Proxy]  ← optional (eloipool / ckpool adapted / miningcore)
-        │ getblocktemplate RPC
-        ▼
-[freecashd Full Node]   ← Docker volume for blockchain
-        │
-        ▼
-[Flask Dashboard]       ← Mining-Dutch style UI (port 8080)
+NerdQaxe++  →  stratum+tcp://DEINE_IP:3333
+                    ↓
+              stratum/server.py   (GBT → Jobs → Share-Validierung → submitblock)
+                    ↓
+              bitcoincashIId      (Full Node, RPC 8342)
+                    ↓
+              monitor/app.py      (Dashboard :5000)
 ```
 
 ---
 
-## Quick Start (Portainer on NAS)
+## Schnellstart (ohne Docker)
 
-1. Clone or download this repo on your NAS.
-2. Create a stack in Portainer with the provided `docker-compose.yml`.
-3. Set environment variables (see `.env.example`).
-4. Map a persistent volume for blockchain data (important – sync takes time).
-5. Start the stack.
-6. Wait for full sync (`getblockchaininfo` → `blocks` == `headers`).
-7. Point your NerdQaxe++ to the stratum endpoint (or keep Mining-Dutch SOLO as fallback).
+### 1. Node
 
-Detailed Portainer steps and ASIC config are in `docs/PORTAINER.md` and `docs/NERDQAXE.md`.
+Binary von: https://github.com/BitcoincashII/bitcoincashII-core/releases
 
----
+```bash
+mkdir -p ~/.bitcoincashII
+cat > ~/.bitcoincashII/bitcoincashII.conf << 'EOF'
+server=1
+daemon=1
+listen=1
+port=8339
+rpcport=8342
+rpcuser=bch2rpc
+rpcpassword=HIER_STARKES_PASSWORT
+rpcallowip=127.0.0.1
+txindex=1
+EOF
 
-## Components
+bitcoincashIId -daemon
+bitcoincashII-cli getblockchaininfo   # warten bis initialblockdownload=false
+bitcoincashII-cli createwallet "mining"
+bitcoincashII-cli getnewaddress
+```
 
-| Service       | Purpose                          | Port (default) |
-|---------------|----------------------------------|----------------|
-| freecashd     | Full node + RPC                  | 8332 (RPC), 8333 (P2P) |
-| dashboard     | Flask UI (Mining-Dutch layout)   | 8080           |
-| stratum       | Solo stratum (optional)          | 3333           |
+### 2. Dieses Repo
 
----
+```bash
+git clone https://github.com/SyCzOfficialYT/freecash-coin.git
+cd freecash-coin
+cp config/config.example.yaml config/config.yaml
+# RPC-Passwort + ggf. payout_address anpassen
+nano config/config.yaml
 
-## Dashboard Features (Mining-Dutch style)
+pip install -r requirements.txt
+chmod +x scripts/start.sh
+./scripts/start.sh
+```
 
-- Network: Nethash estimate, Difficulty, Height, Price (if available)
-- Mode table (SOLO focused)
-- Personal hashrate / workers / effort / estimated time to block
-- Round info & highest shares
-- Recent blocks found (from node)
-- Auto-refresh every 5–10 s
-- Dark theme matching modern pool dashboards
+- **Stratum:** Port `3333`
+- **Dashboard:** `http://DEINE_IP:5000`
 
----
+### 3. NerdQaxe++
 
-## Important Notes (Production)
-
-- **Blockchain size**: Plan for several GB + growth. Use a fast SSD volume.
-- **RPC security**: Never expose RPC to the internet. Use `rpcallowip` only for Docker network / localhost.
-- **Stratum**: A full production SHA-256 solo stratum (correct GBT → jobs → share validation → block submission) is non-trivial. This repo provides the node + dashboard foundation. For true local stratum we recommend adapting [eloipool](https://github.com/SKlayer/fch-eloipool) or ckpool in BTCSOLO mode with FreeCash RPC.
-- **Maturity**: FreeCash coinbase maturity is long (check current rules). Blocks need confirmations before spendable.
-- **Backup**: Always backup your wallet.dat / seed and the datadir.
-
----
-
-## Research Sources
-
-- https://learnmeabitcoin.com/technical/mining/ (block header, HASH256, target, nonce, coinbase)
-- Official FreeCash: https://github.com/freecashorg/freecash
-- Mining-Dutch FCH dashboard (layout reference)
-- NerdQaxe++ firmware (ESP-Miner based)
+| Feld | Wert |
+|------|------|
+| URL | `stratum+tcp://DEINE_IP:3333` |
+| Username | `bitcoincashii:DEINE_ADRESSE.nerdq1` |
+| Password | `x` oder `d=256` |
 
 ---
 
-## License
+## Portainer / Docker
 
-MIT – use at your own risk. Crypto mining involves financial risk and electricity costs.
+Siehe `docs/PORTAINER.md`.  
+Node läuft typischerweise **auf dem Host** (Sync + Wallet); Stratum + Dashboard als Container mit `network_mode: host`.
 
 ---
 
-Made for true solo miners who want every share (and every block) for themselves.
+## Wichtige Dateien
+
+| Pfad | Rolle |
+|------|--------|
+| `stratum/server.py` | Produktions-Stratum (NerdQaxe prevhash, version-rolling, d=) |
+| `stratum/asic_compat.py` | ESP-Miner Header-Hilfen (optional) |
+| `monitor/` | Flask Dashboard (Mining-Dutch Layout) |
+| `config/config.example.yaml` | Vorlage – Kopie nach `config.yaml` |
+| `scripts/start.sh` | Startet Stratum + Dashboard |
+| `data/stats.json` | Share-Stats (wird vom Stratum geschrieben) |
+
+---
+
+## Ports
+
+| Dienst | Port |
+|--------|------|
+| BCH2 P2P | 8339 |
+| BCH2 RPC | 8342 (nur lokal) |
+| Stratum | 3333 |
+| Dashboard | 5000 |
+
+---
+
+## Herkunft
+
+Übernommen und bereinigt aus **SyCzOfficialYT/fch-node** (funktionierender Share-Stack für NerdQaxe++).
