@@ -1,6 +1,4 @@
-# FreeCash Solo ALL-IN-ONE
-# freecashd is linked against Ubuntu 16.04 libs (boost 1.58, openssl 1.0).
-# We extract those exact .so files from the official fc.io image layers.
+# FreeCash Solo ALL-IN-ONE (x86_64 / amd64 only – official freecashd is not ARM)
 FROM python:3.12-slim-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive \
@@ -13,40 +11,40 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LD_LIBRARY_PATH=/opt/fch/lib
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl unzip tar \
+    ca-certificates curl unzip tar file \
     && rm -rf /var/lib/apt/lists/*
 
-# Official FreeCash docker release → binaries + matching shared libs
 WORKDIR /tmp/fc
-RUN curl -fsSL -o fc.zip \
-      "https://github.com/freecashorg/freecash/releases/download/v1.0.5/fc_miner_docker_1.0.5.zip" \
- && unzip -q fc.zip \
- && tar xf fc_miner_1.0.5/fc.io_1.0.5.tar.gz \
- && mkdir -p /usr/local/bin /opt/fch/lib \
- && tar xf 58e660eee10845db7d57aa5446435af651405077ce93350abac33261e37d3969/layer.tar -C / usr/local/bin/freecashd \
- && tar xf 857b354a787190b399012286ec8ac6553516b44d8da71713a1f72855db0cb5c2/layer.tar -C / usr/local/bin/freecash-cli \
- && chmod +x /usr/local/bin/freecashd /usr/local/bin/freecash-cli \
- && tar xf 99126708361e7184a32e1995981ac54af16b2742c64e065175874ecec23f0521/layer.tar -C /tmp/fc \
-      usr/lib/x86_64-linux-gnu/libboost_system.so.1.58.0 \
-      usr/lib/x86_64-linux-gnu/libboost_filesystem.so.1.58.0 \
-      usr/lib/x86_64-linux-gnu/libboost_program_options.so.1.58.0 \
-      usr/lib/x86_64-linux-gnu/libboost_thread.so.1.58.0 \
-      usr/lib/x86_64-linux-gnu/libboost_chrono.so.1.58.0 \
-      usr/lib/x86_64-linux-gnu/libboost_date_time.so.1.58.0 \
-      usr/lib/x86_64-linux-gnu/libboost_atomic.so.1.58.0 \
-      usr/lib/x86_64-linux-gnu/libdb_cxx-5.3.so \
-      usr/lib/x86_64-linux-gnu/libdb-5.3.so \
-      usr/lib/x86_64-linux-gnu/libcrypto.so.1.0.0 \
-      usr/lib/x86_64-linux-gnu/libssl.so.1.0.0 \
-      usr/lib/x86_64-linux-gnu/libminiupnpc.so.10 \
-      usr/lib/x86_64-linux-gnu/libevent_pthreads-2.0.so.5 \
-      usr/lib/x86_64-linux-gnu/libevent-2.0.so.5 \
-      usr/lib/x86_64-linux-gnu/libevent_core-2.0.so.5 \
-      usr/lib/x86_64-linux-gnu/libevent_extra-2.0.so.5 \
- && cp -a usr/lib/x86_64-linux-gnu/*.so* /opt/fch/lib/ \
- && ldconfig \
- && LD_LIBRARY_PATH=/opt/fch/lib freecashd -version \
- && rm -rf /tmp/fc
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    echo "Build arch: $arch"; \
+    if [ "$arch" != "x86_64" ] && [ "$arch" != "amd64" ]; then \
+      echo "ERROR: Official freecashd is x86_64 only. This NAS/CPU is $arch."; \
+      echo "Use an Intel/AMD Synology or a small x86_64 VPS for the node."; \
+      exit 1; \
+    fi; \
+    curl -fsSL -o fc.zip \
+      "https://github.com/freecashorg/freecash/releases/download/v1.0.5/fc_miner_docker_1.0.5.zip"; \
+    unzip -q fc.zip; \
+    tar xf fc_miner_1.0.5/fc.io_1.0.5.tar.gz; \
+    mkdir -p /usr/local/bin /opt/fch/lib; \
+    tar xf 58e660eee10845db7d57aa5446435af651405077ce93350abac33261e37d3969/layer.tar \
+      -C / --wildcards 'usr/local/bin/freecashd'; \
+    tar xf 857b354a787190b399012286ec8ac6553516b44d8da71713a1f72855db0cb5c2/layer.tar \
+      -C / --wildcards 'usr/local/bin/freecash-cli'; \
+    chmod +x /usr/local/bin/freecashd /usr/local/bin/freecash-cli; \
+    file /usr/local/bin/freecashd; \
+    mkdir -p /tmp/fc/root; \
+    tar xf 99126708361e7184a32e1995981ac54af16b2742c64e065175874ecec23f0521/layer.tar -C /tmp/fc/root; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libboost_*.so* /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libdb*.so* /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libcrypto.so.1.0.0 /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libssl.so.1.0.0 /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libminiupnpc.so* /opt/fch/lib/; \
+    cp -a /tmp/fc/root/usr/lib/x86_64-linux-gnu/libevent*.so* /opt/fch/lib/; \
+    ls -la /opt/fch/lib/; \
+    LD_LIBRARY_PATH=/opt/fch/lib /usr/local/bin/freecashd -version; \
+    rm -rf /tmp/fc
 
 WORKDIR /app
 COPY requirements.txt .
