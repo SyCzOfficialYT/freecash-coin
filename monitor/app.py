@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Solo Mining Dashboard – Mining-Dutch Style (from fch-node)"""
+"""FreeCash Solo Dashboard – Holding-Adresse + Mining-Dutch Style"""
 from flask import Flask, render_template, jsonify
-import yaml, json, requests, time
+import yaml, json, requests, time, re
 from requests.auth import HTTPBasicAuth
 from pathlib import Path
 
@@ -10,16 +10,20 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config" / "config.yaml"
 if not CONFIG_PATH.exists():
     CONFIG_PATH = ROOT / "config" / "config.example.yaml"
-with open(CONFIG_PATH) as f:
-    cfg = yaml.safe_load(f)
 
+
+def load_cfg():
+    with open(CONFIG_PATH) as f:
+        return yaml.safe_load(f)
+
+
+cfg = load_cfg()
 RPC_HOST = cfg["rpc"]["host"]
 RPC_PORT = cfg["rpc"]["port"]
 RPC_USER = cfg["rpc"]["user"]
 RPC_PASS = cfg["rpc"]["password"]
-PAYOUT_ADDRESS = cfg["pool"]["payout_address"]
 STATS_PATH = ROOT / "data" / "stats.json"
-PAYOUT_THRESHOLD = float(cfg.get("pool", {}).get("payout_threshold", 50.0))
+PAYOUT_THRESHOLD = float(cfg.get("pool", {}).get("payout_threshold", 10.0))
 
 
 def rpc(method, params=None):
@@ -35,6 +39,28 @@ def rpc(method, params=None):
         return None
 
 
+def get_holding_address():
+    """Immer frisch aus config lesen (nach setup_address)."""
+    try:
+        c = load_cfg()
+        return (c.get("pool") or {}).get("payout_address") or ""
+    except Exception:
+        return cfg.get("pool", {}).get("payout_address") or ""
+
+
+def validate_holding(addr):
+    if not addr or not str(addr).startswith("F"):
+        return False, "keine F… Adresse"
+    if re.search(r"CHANGE|xxxxxxxx", addr, re.I):
+        return False, "Platzhalter"
+    info = rpc("validateaddress", [addr])
+    if info is None:
+        return True, "RPC offline – Format ok"
+    if info.get("isvalid"):
+        return True, "valid"
+    return False, "ungültig laut Node"
+
+
 def load_stats():
     try:
         if STATS_PATH.exists():
@@ -42,16 +68,9 @@ def load_stats():
     except Exception:
         pass
     return {
-        "shares_ok": 0,
-        "shares_bad": 0,
-        "blocks_found": 0,
-        "best_share_diff": 0,
-        "block_rewards_total": 0.0,
-        "workers": {},
-        "last_share_time": None,
-        "last_share_diff": None,
-        "last_share_hash": None,
-        "started_at": None,
+        "shares_ok": 0, "shares_bad": 0, "blocks_found": 0, "best_share_diff": 0,
+        "block_rewards_total": 0.0, "workers": {}, "last_share_time": None,
+        "last_share_diff": None, "last_share_hash": None, "started_at": None,
     }
 
 
@@ -135,6 +154,10 @@ def index():
     soft = min(40.0, shares_ok * 0.5) if shares_ok else 0
     effort_bar = max(effort, soft)
     bal = float(balance) if balance is not None else 0.0
+
+    holding = get_holding_address()
+    addr_ok, addr_msg = validate_holding(holding)
+
     return render_template(
         "dashboard.html",
         synced=synced,
@@ -155,7 +178,9 @@ def index():
         last_share_time=stats.get("last_share_time"),
         last_share_hash=stats.get("last_share_hash"),
         threshold_fmt=f"{PAYOUT_THRESHOLD:.2f}",
-        payout=PAYOUT_ADDRESS,
+        payout=holding,
+        addr_ok=addr_ok,
+        addr_msg=addr_msg,
         workers=stats.get("workers") or {},
         started_at=stats.get("started_at"),
         connections=connections,
@@ -168,12 +193,16 @@ def index():
 @app.route("/api/status")
 def api_status():
     info = rpc("getblockchaininfo") or {}
+    holding = get_holding_address()
+    addr_ok, addr_msg = validate_holding(holding)
     return jsonify({
         "synced": not info.get("initialblockdownload", True),
         "height": info.get("blocks"),
         "difficulty": info.get("difficulty"),
         "balance": rpc("getbalance"),
-        "payout_address": PAYOUT_ADDRESS,
+        "holding_address": holding,
+        "address_valid": addr_ok,
+        "address_status": addr_msg,
         "stats": load_stats(),
     })
 

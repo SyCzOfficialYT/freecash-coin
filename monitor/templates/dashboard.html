@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Solo Node • Dashboard</title>
+<title>FCH Solo • Dashboard</title>
 <style>
   :root {
     --bg: #0b0e14; --panel: #12161f; --panel2: #181d28; --border: #243041;
@@ -19,7 +19,19 @@
   .badge { display:inline-flex; align-items:center; gap:0.4rem; font-size:0.75rem; padding:0.25rem 0.65rem;
     border-radius:999px; background:#132a1f; color:var(--green); border:1px solid #1f4d35; }
   .badge.bad { background:#2a1313; color:var(--red); border-color:#4d1f1f; }
-  .net-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:1px; background:var(--border); }
+  .holding {
+    margin: 1rem 1.5rem 0; padding: 1rem 1.25rem; border-radius: 12px;
+    background: var(--panel); border: 1px solid var(--border);
+  }
+  .holding.ok { border-color: #1f4d35; }
+  .holding.bad { border-color: #4d1f1f; }
+  .holding .label { font-size: 0.7rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .holding .addr {
+    font-family: ui-monospace, monospace; font-size: 1rem; word-break: break-all;
+    margin-top: 0.35rem; color: var(--cyan);
+  }
+  .holding .hint { font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+  .net-stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:1px; background:var(--border); margin-top:1rem; }
   .net-stats .cell { background:var(--panel); padding:1rem 1.25rem; }
   .net-stats .label { font-size:0.7rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em; }
   .net-stats .val { font-size:1.35rem; font-weight:600; margin-top:0.2rem; }
@@ -31,8 +43,6 @@
   .round-meta span { color:var(--muted); }
   .progress-track { height:14px; background:var(--panel2); border-radius:999px; overflow:hidden; border:1px solid var(--border); }
   .progress-fill { height:100%; background:linear-gradient(90deg,#1d4ed8,#3b82f6,#38bdf8); border-radius:999px; transition:width 0.8s ease; position:relative; }
-  .progress-fill::after { content:""; position:absolute; inset:0; background:linear-gradient(90deg,transparent,rgba(255,255,255,0.25),transparent); animation:shimmer 2s infinite; }
-  @keyframes shimmer { 0% { transform:translateX(-100%); } 100% { transform:translateX(100%); } }
   .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:1.25rem; }
   .card { background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:1.25rem 1.4rem; }
   .card h3 { font-size:0.75rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em; margin-bottom:0.9rem; font-weight:500; }
@@ -41,26 +51,37 @@
   .stat-row .k { color:var(--muted); }
   .stat-row .v { font-weight:600; font-variant-numeric:tabular-nums; }
   .v.ok { color:var(--green); } .v.bad { color:var(--red); } .v.accent { color:var(--accent); } .v.cyan { color:var(--cyan); }
-  .addr { font-family:ui-monospace,monospace; font-size:0.78rem; word-break:break-all; color:var(--muted);
-    background:var(--panel2); padding:0.6rem 0.75rem; border-radius:8px; margin-top:0.5rem; border:1px solid var(--border); }
   footer { text-align:center; padding:2rem 1rem; color:var(--muted); font-size:0.8rem; }
 </style>
 </head>
 <body>
 <header>
-  <h1><span>Solo</span> Node</h1>
+  <h1><span>FCH</span> Solo Node</h1>
   <div class="badge {{ 'bad' if not synced else '' }}">
     <span style="width:7px;height:7px;border-radius:50%;background:currentColor;display:inline-block;"></span>
     {{ 'Synced' if synced else 'Syncing…' }} · {{ connections }} peers
   </div>
 </header>
+
+<div class="holding {{ 'ok' if addr_ok else 'bad' }}">
+  <div class="label">Holding-Adresse · Coinbase · Exchange-Deposit</div>
+  <div class="addr">{{ payout }}</div>
+  <div class="hint">
+    {% if addr_ok %}
+      ✓ {{ addr_msg }} · Block-Rewards landen hier · dieselbe Adresse an der Börse als Einzahlung nutzen
+    {% else %}
+      ✗ {{ addr_msg }} · starte <code>python3 scripts/setup_address.py</code> oder <code>./scripts/start.sh</code>
+    {% endif %}
+  </div>
+</div>
+
 <section class="net-stats">
   <div class="cell"><div class="label">Height</div><div class="val">{{ height }}</div><div class="sub">chain tip</div></div>
   <div class="cell"><div class="label">Difficulty</div><div class="val">{{ difficulty_fmt }}</div><div class="sub">network</div></div>
   <div class="cell"><div class="label">Est. Hashrate</div><div class="val">{{ hashrate_fmt }}</div><div class="sub">from shares</div></div>
-  <div class="cell"><div class="label">Balance</div><div class="val">{{ balance_fmt }}</div><div class="sub">wallet</div></div>
+  <div class="cell"><div class="label">Balance</div><div class="val">{{ balance_fmt }}</div><div class="sub">FCH in Wallet</div></div>
   <div class="cell"><div class="label">Blocks Found</div><div class="val" style="color:var(--green)">{{ blocks_found }}</div><div class="sub">solo</div></div>
-  <div class="cell"><div class="label">Rewards</div><div class="val">{{ rewards_fmt }}</div><div class="sub">lifetime</div></div>
+  <div class="cell"><div class="label">Rewards</div><div class="val">{{ rewards_fmt }}</div><div class="sub">lifetime FCH</div></div>
 </section>
 <main>
   <div class="round-card">
@@ -84,12 +105,12 @@
       <div class="stat-row"><span class="k">Last hash</span><span class="v cyan" style="font-size:0.8rem">{{ last_share_hash or '–' }}</span></div>
     </div>
     <div class="card">
-      <h3>Payout</h3>
-      <div class="stat-row"><span class="k">Wallet balance</span><span class="v ok">{{ balance_fmt }}</span></div>
-      <div class="stat-row"><span class="k">Lifetime rewards</span><span class="v">{{ rewards_fmt }}</span></div>
-      <div class="stat-row"><span class="k">Threshold</span><span class="v">{{ threshold_fmt }}</span></div>
+      <h3>Wallet / Exchange</h3>
+      <div class="stat-row"><span class="k">Wallet balance</span><span class="v ok">{{ balance_fmt }} FCH</span></div>
+      <div class="stat-row"><span class="k">Lifetime rewards</span><span class="v">{{ rewards_fmt }} FCH</span></div>
       <div class="stat-row"><span class="k">Mode</span><span class="v accent">SOLO → coinbase</span></div>
-      <div class="addr">{{ payout }}</div>
+      <div class="stat-row"><span class="k">Adresse</span><span class="v {{ 'ok' if addr_ok else 'bad' }}">{{ addr_msg }}</span></div>
+      <div class="stat-row"><span class="k">NerdQaxe User</span><span class="v cyan" style="font-size:0.75rem;max-width:55%;text-align:right;word-break:break-all">{{ payout }}.nerdq1</span></div>
     </div>
     <div class="card">
       <h3>Workers</h3>
@@ -116,7 +137,7 @@
   </div>
 </main>
 <footer>
-  Solo stratum · freecash-coin (from fch-node) · Auto-Refresh 8s<br>
+  FreeCash Solo · Holding = Coinbase = Exchange-Deposit · Auto-Refresh 8s<br>
   Aktualisiert {{ now }}
 </footer>
 <script>setTimeout(() => location.reload(), 8000);</script>
