@@ -1,0 +1,24 @@
+# Fertige Solo-Config (generiert)
+# RPC-Passwort MUSS identisch in ~/.bitcoincashII/bitcoincashII.conf stehen!
+
+rpc:
+  host: "127.0.0.1"
+  port: 8342
+  user: "bch2rpc"
+  password: "AcX3p5J_Xk4j-NX4wdSji489z9RQgVzy"
+  timeout: 30
+
+pool:
+  payout_address: "bitcoincashii:qqssqww4u4rldtl04gshuqvrledjhuwy95ytdyw0xa"
+  stratum_port: 3333
+  stratum_host: "0.0.0.0"
+  start_difficulty: 256
+  job_interval: 25
+  payout_threshold: 50.0
+
+monitor:
+  host: "0.0.0.0"
+  port: 5000
+
+logging:
+  level: "INFO"
