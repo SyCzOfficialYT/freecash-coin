@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FreeCash (FCH) Solo Stratum – NerdQaxe++ compatible."""
+"""FreeCash (FCH) Solo Stratum – NerdQaxe++ compatible + events for dashboard terminal."""
 import socket, threading, json, time, struct, hashlib, logging, binascii, os
 from pathlib import Path
 from datetime import datetime
@@ -25,15 +25,37 @@ STRATUM_PORT = int(cfg["pool"].get("stratum_port", 3333))
 START_DIFF = int(cfg["pool"].get("start_difficulty", 256))
 JOB_INTERVAL = int(cfg["pool"].get("job_interval", 25))
 STATS_PATH = ROOT / "data" / "stats.json"
+EVENTS_PATH = ROOT / "data" / "events.jsonl"
 STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("fch-stratum")
 _stats_lock = threading.Lock()
+_event_lock = threading.Lock()
 _stats = {"shares_ok": 0, "shares_bad": 0, "blocks_found": 0, "best_share_diff": 0,
           "block_rewards_total": 0.0, "workers": {}, "last_share_time": None,
           "last_share_diff": None, "last_share_hash": None,
           "started_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")}
+
+def emit(level, msg):
+    """Write one terminal line for the dashboard."""
+    line = {"ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), "level": level, "msg": msg}
+    try:
+        with _event_lock:
+            with open(EVENTS_PATH, "a") as f:
+                f.write(json.dumps(line, ensure_ascii=False) + "\n")
+            # trim file if huge
+            if EVENTS_PATH.exists() and EVENTS_PATH.stat().st_size > 2_000_000:
+                rows = EVENTS_PATH.read_text().splitlines()[-500:]
+                EVENTS_PATH.write_text("\n".join(rows) + "\n")
+    except Exception:
+        pass
+    if level == "ERROR":
+        log.error("%s", msg)
+    elif level == "WARN":
+        log.warning("%s", msg)
+    else:
+        log.info("%s", msg)
 
 def _load_stats():
     global _stats
@@ -130,11 +152,13 @@ class JobStore:
     def ensure_spk(self):
         if self.script_pubkey is None:
             self.script_pubkey = address_to_scriptpubkey(PAYOUT_ADDRESS)
-            log.info("scriptPubKey ready (%d bytes)", len(self.script_pubkey))
+            emit("INFO", f"scriptPubKey ready ({len(self.script_pubkey)} bytes) for holding address")
     def refresh(self):
         self.ensure_spk()
         tmpl = rpc("getblocktemplate", [{"rules": []}]) or rpc("getblocktemplate", [])
-        if not tmpl: log.warning("getblocktemplate failed"); return None
+        if not tmpl:
+            emit("WARN", "getblocktemplate failed – is freecashd synced?")
+            return None
         other_tx = [binascii.unhexlify(tx["txid"])[::-1] for tx in tmpl.get("transactions", [])]
         nbits = tmpl["bits"]
         job_id = f"{tmpl['height']:x}-{int(time.time()) & 0xFFFFFF:x}"
@@ -148,7 +172,7 @@ class JobStore:
             if len(self.jobs) > 10:
                 for k in sorted(self.jobs.keys())[:-6]: self.jobs.pop(k, None)
             self.current_id = job_id
-        log.info("Job %s height=%s value=%.8f FCH", job_id, job["height"], job["value"]/1e8)
+        emit("INFO", f"Job {job_id} height={job['height']} value={job['value']/1e8:.8f} FCH txs={len(other_tx)}")
         return job
     def get(self, job_id):
         with self.lock: return self.jobs.get(job_id)
@@ -169,6 +193,7 @@ class Client(threading.Thread):
     def handle_subscribe(self, mid, params):
         en1_hex = binascii.hexlify(self.en1).decode()
         self.send({"id": mid, "result": [[["mining.notify", en1_hex], ["mining.set_difficulty", en1_hex]], en1_hex, self.en2_size], "error": None})
+        emit("INFO", f"subscribe from {self.addr}")
     def handle_authorize(self, mid, params):
         self.worker = params[0] if params else "?"
         password = params[1] if len(params) > 1 else ""
@@ -179,6 +204,7 @@ class Client(threading.Thread):
             except Exception: pass
         self.send({"id": mid, "result": True, "error": None})
         self.send({"id": None, "method": "mining.set_difficulty", "params": [self.diff]})
+        emit("INFO", f"authorize {self.worker} share_diff={self.diff}")
         self.push_job(True)
     def handle_suggest_difficulty(self, mid, params):
         if not self.diff_from_password and params:
@@ -209,12 +235,12 @@ class Client(threading.Thread):
             f"{job['version']:08x}", nb, f"{job['ntime']:08x}", clean]})
     def handle_submit(self, mid, params):
         if len(params) < 5:
-            self.send({"id": mid, "result": False, "error": [20, "bad params", None]}); _bump_worker(self.worker, False); _save_stats(); return
+            self.send({"id": mid, "result": False, "error": [20, "bad params", None]}); _bump_worker(self.worker, False); _save_stats(); emit("WARN", "REJECT bad params"); return
         _, job_id, en2_hex, ntime_hex, nonce_hex = params[:5]
         version_hex = params[5] if len(params) >= 6 else None
         job = store.get(job_id)
         if not job:
-            self.send({"id": mid, "result": False, "error": [21, "stale job", None]}); _bump_worker(self.worker, False); _save_stats(); return
+            self.send({"id": mid, "result": False, "error": [21, "stale job", None]}); _bump_worker(self.worker, False); _save_stats(); emit("WARN", "REJECT stale job"); return
         try:
             en2 = binascii.unhexlify(en2_hex)
             if len(en2) != self.en2_size: en2 = (en2 + b"\x00" * self.en2_size)[:self.en2_size]
@@ -234,7 +260,9 @@ class Client(threading.Thread):
         h = sha256d(header); h_int = int.from_bytes(h[::-1], "big")
         if h_int > difficulty_to_target(self.diff):
             self.send({"id": mid, "result": False, "error": [23, "low difficulty", None]})
-            self.shares_bad += 1; _bump_worker(self.worker, False); _save_stats(); return
+            self.shares_bad += 1; _bump_worker(self.worker, False); _save_stats()
+            emit("WARN", f"REJECT lowdiff worker={self.worker} hash={h[::-1].hex()[:16]}")
+            return
         self.send({"id": mid, "result": True, "error": None}); self.shares_ok += 1
         with _stats_lock:
             _stats["last_share_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
@@ -243,21 +271,22 @@ class Client(threading.Thread):
             sd = target_to_difficulty(h_int)
             if sd > (_stats.get("best_share_diff") or 0): _stats["best_share_diff"] = sd
         _bump_worker(self.worker, True); _save_stats()
-        log.info("ACCEPT share #%d worker=%s hash=%s", self.shares_ok, self.worker, h[::-1].hex()[:16])
+        emit("OK", f"ACCEPT share #{self.shares_ok} worker={self.worker} hash={h[::-1].hex()[:16]} diff={self.diff} total_ok={_stats.get('shares_ok')}")
         if h_int <= job["target"]:
-            log.warning("*** BLOCK CANDIDATE *** height=%s", job["height"])
+            emit("WARN", f"*** BLOCK CANDIDATE *** height={job['height']} hash={h[::-1].hex()}")
             tx_count = 1 + len(job["template"].get("transactions", []))
             block = header + encode_varint(tx_count) + coinbase_tx
             for tx in job["template"].get("transactions", []):
                 block += binascii.unhexlify(tx["data"])
             res = rpc("submitblock", [binascii.hexlify(block).decode()])
             if res in (None, ""):
-                log.warning("*** BLOCK ACCEPTED ***")
+                emit("OK", "*** BLOCK ACCEPTED BY NETWORK ***")
                 with _stats_lock:
                     _stats["blocks_found"] = _stats.get("blocks_found", 0) + 1
                     _stats["block_rewards_total"] = _stats.get("block_rewards_total", 0) + job["value"] / 1e8
                 _save_stats()
-            else: log.error("submitblock: %s", res)
+            else:
+                emit("ERROR", f"submitblock rejected: {res}")
     def run(self):
         buf = ""
         try:
@@ -280,34 +309,38 @@ class Client(threading.Thread):
                     elif method == "mining.configure":
                         self.send({"id": mid, "result": {"version-rolling": True, "version-rolling.mask": "1fffe000", "version-rolling.min-bit-count": 16}, "error": None})
                     elif mid is not None: self.send({"id": mid, "result": None, "error": [20, "unknown", None]})
-        except Exception as e: log.error("client %s: %s", self.addr, e)
+        except Exception as e:
+            emit("ERROR", f"client {self.addr}: {e}")
         finally:
             try: self.conn.close()
             except Exception: pass
-            log.info("disconnect %s ok=%d bad=%d", self.worker, self.shares_ok, self.shares_bad)
+            emit("INFO", f"disconnect {self.worker} ok={self.shares_ok} bad={self.shares_bad}")
 
 def job_loop():
     while True:
         try: store.refresh()
-        except Exception as e: log.error("job_loop: %s", e)
+        except Exception as e: emit("ERROR", f"job_loop: {e}")
         time.sleep(JOB_INTERVAL)
 
 def main():
     _load_stats(); _save_stats()
-    log.info("FreeCash (FCH) Solo Stratum – NerdQaxe compatible")
-    log.info("Payout : %s", PAYOUT_ADDRESS)
-    log.info("Listen : %s:%s diff=%s", STRATUM_HOST, STRATUM_PORT, START_DIFF)
+    emit("INFO", "FreeCash (FCH) Solo Stratum – NerdQaxe compatible")
+    emit("INFO", f"Holding/Payout: {PAYOUT_ADDRESS}")
+    emit("INFO", f"Listen {STRATUM_HOST}:{STRATUM_PORT} start_diff={START_DIFF}")
     if not PAYOUT_ADDRESS.startswith("F") or "CHANGE" in PAYOUT_ADDRESS:
-        log.error("Set a real FreeCash F… address in config/config.yaml!")
-    store.ensure_spk(); store.refresh()
+        emit("ERROR", "Set a real FreeCash F… address (run setup_address / entrypoint)")
+    try:
+        store.ensure_spk(); store.refresh()
+    except Exception as e:
+        emit("ERROR", f"startup template failed: {e}")
     threading.Thread(target=job_loop, daemon=True).start()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind((STRATUM_HOST, STRATUM_PORT)); sock.listen(16)
-    log.info("waiting for miners on :%s", STRATUM_PORT)
+    emit("INFO", f"waiting for miners on :{STRATUM_PORT}")
     while True:
         conn, addr = sock.accept()
-        log.info("connect %s", addr)
+        emit("INFO", f"connect {addr}")
         Client(conn, addr).start()
 
 if __name__ == "__main__":
