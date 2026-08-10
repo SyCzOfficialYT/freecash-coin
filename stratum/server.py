@@ -33,11 +33,14 @@ log = logging.getLogger("fch-stratum")
 _stats_lock = threading.Lock()
 _event_lock = threading.Lock()
 _clients_lock = threading.Lock()
-_clients = []  # active Client threads
-_stats = {"shares_ok": 0, "shares_bad": 0, "blocks_found": 0, "best_share_diff": 0,
-          "block_rewards_total": 0.0, "workers": {}, "last_share_time": None,
-          "last_share_diff": None, "last_share_hash": None,
-          "started_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")}
+_clients = []
+_stats = {
+    "shares_ok": 0, "shares_bad": 0, "blocks_found": 0, "best_share_diff": 0,
+    "block_rewards_total": 0.0, "workers": {}, "last_share_time": None,
+    "last_share_diff": None, "last_share_hash": None, "last_share_work": None,
+    "recent_shares": [], "blocks_log": [],
+    "started_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+}
 
 def emit(level, msg):
     line = {"ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"), "level": level, "msg": msg}
@@ -61,9 +64,9 @@ def _load_stats():
     global _stats
     try:
         if STATS_PATH.exists():
-            for k, v in json.loads(STATS_PATH.read_text()).items():
-                if k in _stats:
-                    _stats[k] = v
+            data = json.loads(STATS_PATH.read_text())
+            for k, v in data.items():
+                _stats[k] = v
     except Exception:
         pass
 
@@ -83,6 +86,25 @@ def _bump_worker(name, ok=True):
         else:
             w["bad"] = w.get("bad", 0) + 1
             _stats["shares_bad"] = _stats.get("shares_bad", 0) + 1
+
+def _record_share(worker, share_work, pool_diff, net_diff, hhex, height, accepted=True):
+    pct = (100.0 * share_work / net_diff) if net_diff else 0.0
+    entry = {
+        "ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "worker": worker,
+        "work": share_work,
+        "pool_diff": pool_diff,
+        "net_diff": net_diff,
+        "pct": round(pct, 4),
+        "hash": hhex[:16],
+        "height": height,
+        "ok": accepted,
+    }
+    with _stats_lock:
+        rs = _stats.setdefault("recent_shares", [])
+        rs.append(entry)
+        _stats["recent_shares"] = rs[-40:]
+        _stats["last_share_work"] = share_work
 
 def rpc(method, params=None):
     try:
@@ -178,16 +200,15 @@ def full_merkle_root(coinbase_hash_le, other_tx_le):
 
 
 class JobStore:
-    """Keep several recent jobs so in-flight ASIC shares are not stale."""
-
     def __init__(self):
         self.lock = threading.Lock()
-        self.jobs = {}  # job_id -> job
-        self.by_height = {}  # height -> job_id (latest)
+        self.jobs = {}
+        self.by_height = {}
         self.current_id = None
         self.last_prevhash = None
         self.last_height = None
         self.script_pubkey = None
+        self.network_diff = 0.0
 
     def ensure_spk(self):
         if self.script_pubkey is None:
@@ -195,9 +216,6 @@ class JobStore:
             emit("INFO", f"scriptPubKey ready ({len(self.script_pubkey)} bytes) for holding address")
 
     def refresh(self):
-        """Fetch template. New job_id only when height/prevhash changes.
-        Returns (job, clean_jobs_bool) or (None, False).
-        """
         self.ensure_spk()
         tmpl = rpc("getblocktemplate", [{"rules": []}]) or rpc("getblocktemplate", [])
         if not tmpl:
@@ -209,9 +227,10 @@ class JobStore:
         nbits = tmpl["bits"]
         nbits_s = nbits if isinstance(nbits, str) else f"{nbits:08x}"
         other_tx = [binascii.unhexlify(tx["txid"])[::-1] for tx in tmpl.get("transactions", [])]
+        net_diff = target_to_difficulty(bits_to_target(nbits))
 
         with self.lock:
-            # Same tip → reuse job id, only refresh ntime/template (no clean)
+            self.network_diff = net_diff
             if (
                 self.current_id
                 and self.last_height == height
@@ -223,6 +242,7 @@ class JobStore:
                 job["template"] = tmpl
                 job["value"] = tmpl["coinbasevalue"]
                 job["other_tx"] = other_tx
+                job["net_diff"] = net_diff
                 return job, False
 
             job_id = f"{height:x}-{int(time.time()) & 0xFFFFFF:x}"
@@ -235,6 +255,7 @@ class JobStore:
                 "nbits": nbits_s,
                 "ntime": tmpl["curtime"],
                 "target": bits_to_target(nbits),
+                "net_diff": net_diff,
                 "template": tmpl,
                 "spk": self.script_pubkey,
                 "other_tx": other_tx,
@@ -246,16 +267,14 @@ class JobStore:
             self.last_height = height
             self.last_prevhash = prevhash
 
-            # Keep jobs for last ~8 heights + anything younger than 10 minutes
             cutoff = time.time() - 600
             keep_heights = set(sorted(self.by_height.keys())[-8:])
             for jid, j in list(self.jobs.items()):
                 if j["height"] not in keep_heights and j.get("created", 0) < cutoff:
                     self.jobs.pop(jid, None)
 
-            clean = True  # new block / new tip → miners must drop old work
-            emit("INFO", f"Job {job_id} height={height} value={job['value']/1e8:.8f} FCH txs={len(other_tx)} clean={clean}")
-            return job, clean
+            emit("INFO", f"Job {job_id} height={height} value={job['value']/1e8:.8f} FCH txs={len(other_tx)} netdiff={net_diff:.2f}")
+            return job, True
 
     def get(self, job_id):
         with self.lock:
@@ -266,7 +285,6 @@ store = JobStore()
 
 
 def broadcast_job(clean=True):
-    """Push current job to all connected miners."""
     with _clients_lock:
         clients = [c for c in _clients if c.running]
     for c in clients:
@@ -388,7 +406,6 @@ class Client(threading.Thread):
         version_hex = params[5] if len(params) >= 6 else None
         job = store.get(job_id)
         if not job:
-            # soft: try current job only if same epoch – still reject properly
             self.send({"id": mid, "result": False, "error": [21, "stale job", None]})
             self.shares_bad += 1
             _bump_worker(self.worker, False)
@@ -434,44 +451,59 @@ class Client(threading.Thread):
         )
         h = sha256d(header)
         h_int = int.from_bytes(h[::-1], "big")
+        share_work = target_to_difficulty(h_int)
+        net_diff = job.get("net_diff") or store.network_diff or 1.0
+        hhex = h[::-1].hex()
 
         if h_int > difficulty_to_target(self.diff):
             self.send({"id": mid, "result": False, "error": [23, "low difficulty", None]})
             self.shares_bad += 1
             _bump_worker(self.worker, False)
             _save_stats()
-            emit("WARN", f"REJECT lowdiff worker={self.worker} hash={h[::-1].hex()[:16]}")
+            emit("WARN", f"REJECT lowdiff worker={self.worker} hash={hhex[:16]}")
             return
 
         self.send({"id": mid, "result": True, "error": None})
         self.shares_ok += 1
+        pct = 100.0 * share_work / net_diff if net_diff else 0
         with _stats_lock:
             _stats["last_share_time"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             _stats["last_share_diff"] = self.diff
-            _stats["last_share_hash"] = h[::-1].hex()[:16]
-            sd = target_to_difficulty(h_int)
-            if sd > (_stats.get("best_share_diff") or 0):
-                _stats["best_share_diff"] = sd
+            _stats["last_share_hash"] = hhex[:16]
+            _stats["last_share_work"] = share_work
+            if share_work > (_stats.get("best_share_diff") or 0):
+                _stats["best_share_diff"] = share_work
+        _record_share(self.worker, share_work, self.diff, net_diff, hhex, job["height"], True)
         _bump_worker(self.worker, True)
         _save_stats()
         emit(
             "OK",
-            f"ACCEPT share #{self.shares_ok} worker={self.worker} "
-            f"hash={h[::-1].hex()[:16]} diff={self.diff} total_ok={_stats.get('shares_ok')}",
+            f"ACCEPT #{self.shares_ok} work={share_work:.1f} ({pct:.3f}% of net {net_diff:.0f}) "
+            f"hash={hhex[:16]} pool_diff={self.diff}",
         )
 
         if h_int <= job["target"]:
-            emit("WARN", f"*** BLOCK CANDIDATE *** height={job['height']} hash={h[::-1].hex()}")
+            emit("WARN", f"*** BLOCK CANDIDATE *** height={job['height']} hash={hhex}")
             tx_count = 1 + len(job["template"].get("transactions", []))
             block = header + encode_varint(tx_count) + coinbase_tx
             for tx in job["template"].get("transactions", []):
                 block += binascii.unhexlify(tx["data"])
             res = rpc("submitblock", [binascii.hexlify(block).decode()])
             if res in (None, ""):
-                emit("OK", "*** BLOCK ACCEPTED BY NETWORK ***")
+                emit("OK", f"*** BLOCK ACCEPTED *** height={job['height']} reward={job['value']/1e8:.8f} FCH → {PAYOUT_ADDRESS}")
                 with _stats_lock:
                     _stats["blocks_found"] = _stats.get("blocks_found", 0) + 1
                     _stats["block_rewards_total"] = _stats.get("block_rewards_total", 0) + job["value"] / 1e8
+                    blog = _stats.setdefault("blocks_log", [])
+                    blog.append({
+                        "ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                        "height": job["height"],
+                        "hash": hhex,
+                        "reward": job["value"] / 1e8,
+                        "address": PAYOUT_ADDRESS,
+                        "mature_at_height": job["height"] + 14400,
+                    })
+                    _stats["blocks_log"] = blog[-20:]
                 _save_stats()
             else:
                 emit("ERROR", f"submitblock rejected: {res}")
@@ -533,17 +565,11 @@ class Client(threading.Thread):
 
 
 def job_loop():
-    """Poll for new blocks; push notify to miners when tip changes."""
     while True:
         try:
             job, clean = store.refresh()
             if job is not None and clean:
-                # New block on network → all miners need fresh work
                 broadcast_job(clean=True)
-            elif job is not None:
-                # Same tip: optional soft update (ntime) without clean
-                # Don't spam notify every interval – ASIC keeps working
-                pass
         except Exception as e:
             emit("ERROR", f"job_loop: {e}")
         time.sleep(JOB_INTERVAL)
@@ -557,8 +583,7 @@ def stats_loop():
         emit(
             "INFO",
             f"STATS height={store.last_height} ok={s.get('shares_ok')} bad={s.get('shares_bad')} "
-            f"blocks={s.get('blocks_found')} best={s.get('best_share_diff')} "
-            f"bal=? last={s.get('last_share_hash')}",
+            f"blocks={s.get('blocks_found')} best={s.get('best_share_diff')} last={s.get('last_share_hash')}",
         )
 
 
@@ -568,6 +593,7 @@ def main():
     emit("INFO", "FreeCash (FCH) Solo Stratum – NerdQaxe compatible")
     emit("INFO", f"Holding/Payout: {PAYOUT_ADDRESS}")
     emit("INFO", f"Listen {STRATUM_HOST}:{STRATUM_PORT} start_diff={START_DIFF}")
+    emit("INFO", "Coinbase maturity: 14400 blocks (~10 days) before spendable / exchange")
     if not PAYOUT_ADDRESS.startswith("F") or "CHANGE" in PAYOUT_ADDRESS:
         emit("ERROR", "Set a real FreeCash F… address (run setup_address / entrypoint)")
     try:
