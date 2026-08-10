@@ -300,21 +300,31 @@ class JobStore:
         other_tx = [binascii.unhexlify(tx["txid"])[::-1] for tx in tmpl.get("transactions", [])]
         net_diff = target_to_difficulty(bits_to_target(nbits))
         dev_sats = get_dev_reward_sats(height)
+        new_value = int(tmpl["coinbasevalue"])
+
         with self.lock:
             self.network_diff = net_diff
+
+            # Reuse same job ONLY if nothing that affects coinbase/merkle changed.
+            # CRITICAL: never overwrite job['value'] or other_tx – miner already
+            # has coinb1/coinb2 baked from the original notify.
             if (self.current_id and self.last_height == height and self.last_prevhash == prevhash
                     and self.current_id in self.jobs):
                 job = self.jobs[self.current_id]
-                job["ntime"] = tmpl["curtime"]
-                job["template"] = tmpl
-                job["value"] = tmpl["coinbasevalue"]
-                job["dev_value"] = dev_sats
-                job["other_tx"] = other_tx
-                job["net_diff"] = net_diff
-                return job, False
+                same_txs = (len(other_tx) == len(job.get("other_tx") or [])
+                            and all(a == b for a, b in zip(other_tx, job.get("other_tx") or [])))
+                same_value = int(job.get("value") or 0) == new_value
+                if same_txs and same_value:
+                    # Only ntime / template pointer may update; validation fields stay frozen
+                    job["ntime"] = tmpl["curtime"]
+                    job["template"] = tmpl
+                    job["net_diff"] = net_diff
+                    return job, False
+                # Fees or mempool changed → new job id so miners get matching coinb
+
             job_id = f"{height:x}-{int(time.time()) & 0xFFFFFF:x}"
             job = {
-                "id": job_id, "height": height, "value": tmpl["coinbasevalue"],
+                "id": job_id, "height": height, "value": new_value,
                 "dev_value": dev_sats,
                 "prevhash": prevhash, "version": tmpl["version"], "nbits": nbits_s,
                 "ntime": tmpl["curtime"], "target": bits_to_target(nbits),
@@ -511,13 +521,18 @@ class Client(threading.Thread):
             VERSION_MASK = 0x1FFFE000
             if version_hex:
                 sv = int(version_hex, 16)
-                version = sv if sv >= 0x20000000 else (int(job["version"]) & ~VERSION_MASK) | (sv & VERSION_MASK)
+                # NerdQaxe often sends full version bits in the rolling field
+                if sv >= 0x20000000:
+                    version = sv
+                else:
+                    version = (int(job["version"]) & ~VERSION_MASK) | (sv & VERSION_MASK)
             else:
                 version = int(job["version"])
         except Exception:
             self.send({"id": mid, "result": False, "error": [20, "bad hex", None]})
             _bump_worker(self.worker, False); _save_stats(); return
 
+        # ALWAYS use frozen job['value'] / other_tx from the original notify
         coinb1, coinb2 = build_coinbase_parts(
             job["height"], job["value"], job["spk"], job["dev_spk"],
             len(self.en1), self.en2_size,
@@ -539,7 +554,6 @@ class Client(threading.Thread):
             return
 
         # credit at the difficulty the share actually met (capped by current target band)
-        credited = min(self.diff, max(need, min(share_work, self.diff)))
         if share_work >= self.diff:
             credited = self.diff
         elif share_work >= self.diff_prev and time.time() - self.diff_changed_at < DIFF_GRACE_SEC:
@@ -583,7 +597,7 @@ class Client(threading.Thread):
                         "ts": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                         "height": job["height"], "hash": hhex,
                         "reward": job["value"] / 1e8, "address": PAYOUT_ADDRESS,
-                        "mature_at_height": job["height"] + 144,
+                        "mature_at_height": job["height"] + 14400,
                     })
                     _stats["blocks_log"] = blog[-20:]
                 _save_stats()
