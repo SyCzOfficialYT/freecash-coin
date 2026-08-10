@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FreeCash Solo Dashboard – Holding-Adresse + Live-Terminal"""
+"""FreeCash Solo Dashboard – live shares, maturity, holding wallet"""
 from flask import Flask, render_template, jsonify
 import yaml, json, requests, time, re, os
 from requests.auth import HTTPBasicAuth
@@ -14,6 +14,7 @@ if not CONFIG_PATH.exists():
 EVENTS_PATH = ROOT / "data" / "events.jsonl"
 STRATUM_LOG = ROOT / "data" / "stratum.log"
 STATS_PATH = ROOT / "data" / "stats.json"
+COINBASE_MATURITY = 14400  # FCH: ~10 days at 1 min/block
 
 
 def load_cfg():
@@ -26,7 +27,6 @@ RPC_HOST = cfg["rpc"]["host"]
 RPC_PORT = cfg["rpc"]["port"]
 RPC_USER = cfg["rpc"]["user"]
 RPC_PASS = cfg["rpc"]["password"]
-PAYOUT_THRESHOLD = float(cfg.get("pool", {}).get("payout_threshold", 10.0))
 
 
 def rpc(method, params=None):
@@ -72,8 +72,46 @@ def load_stats():
     return {
         "shares_ok": 0, "shares_bad": 0, "blocks_found": 0, "best_share_diff": 0,
         "block_rewards_total": 0.0, "workers": {}, "last_share_time": None,
-        "last_share_diff": None, "last_share_hash": None, "started_at": None,
+        "last_share_diff": None, "last_share_hash": None, "last_share_work": None,
+        "recent_shares": [], "blocks_log": [], "started_at": None,
     }
+
+
+def wallet_balances():
+    """trusted / immature from node."""
+    out = {"trusted": 0.0, "immature": 0.0, "unconfirmed": 0.0}
+    gb = rpc("getbalances")
+    if isinstance(gb, dict) and "mine" in gb:
+        m = gb["mine"]
+        out["trusted"] = float(m.get("trusted") or 0)
+        out["immature"] = float(m.get("immature") or 0)
+        out["unconfirmed"] = float(m.get("untrusted_pending") or 0)
+        return out
+    bal = rpc("getbalance")
+    if bal is not None:
+        out["trusted"] = float(bal)
+    return out
+
+
+def maturity_info(height, blocks_log):
+    """For each found block: confs left until spendable."""
+    rows = []
+    for b in blocks_log or []:
+        bh = b.get("height") or 0
+        mature_at = b.get("mature_at_height") or (bh + COINBASE_MATURITY)
+        left = max(0, mature_at - height)
+        rows.append({
+            "height": bh,
+            "hash": (b.get("hash") or "")[:16],
+            "reward": b.get("reward"),
+            "ts": b.get("ts"),
+            "mature_at": mature_at,
+            "confs": min(COINBASE_MATURITY, max(0, height - bh)),
+            "left": left,
+            "spendable": left <= 0,
+            "eta_min": left,  # 1 min/block
+        })
+    return rows
 
 
 def read_tail_lines(path: Path, n: int = 80):
@@ -90,8 +128,7 @@ def read_tail_lines(path: Path, n: int = 80):
                 size -= step
                 f.seek(size)
                 data = f.read(step) + data
-            lines = data.decode(errors="ignore").splitlines()
-            return lines[-n:]
+            return data.decode(errors="ignore").splitlines()[-n:]
     except Exception:
         return []
 
@@ -149,6 +186,10 @@ def fmt_hashrate(hps):
 def fmt_diff(d):
     if d is None:
         return "–"
+    try:
+        d = float(d)
+    except Exception:
+        return "–"
     if d >= 1e9:
         return f"{d/1e9:.2f} G"
     if d >= 1e6:
@@ -176,85 +217,82 @@ def fmt_duration(sec):
     return f"{int(sec//86400)}d {int((sec%86400)//3600)}h"
 
 
-@app.route("/")
-def index():
+def build_payload():
     info = rpc("getblockchaininfo") or {}
     net = rpc("getnetworkinfo") or {}
-    balance = rpc("getbalance")
     height = info.get("blocks") or 0
-    difficulty = info.get("difficulty") or 0
+    difficulty = float(info.get("difficulty") or 0)
     synced = not info.get("initialblockdownload", True)
     connections = net.get("connections", 0)
     stats = load_stats()
+    wbal = wallet_balances()
     shares_ok = stats.get("shares_ok") or 0
     shares_bad = stats.get("shares_bad") or 0
     total = shares_ok + shares_bad
-    reject_pct = f"{(100.0 * shares_bad / total):.1f}" if total else "0.0"
+    reject_pct = (100.0 * shares_bad / total) if total else 0.0
     blocks_found = stats.get("blocks_found") or 0
-    best = stats.get("best_share_diff") or 0
-    rewards = stats.get("block_rewards_total") or 0.0
+    best = float(stats.get("best_share_diff") or 0)
+    last_work = float(stats.get("last_share_work") or 0)
+    rewards = float(stats.get("block_rewards_total") or 0.0)
     share_diff = stats.get("last_share_diff") or cfg["pool"].get("start_difficulty", 256)
     hr = estimate_hashrate(stats, share_diff)
     eta = eta_seconds(difficulty, hr) if hr else None
-    effort = min(100.0, 100.0 * float(best) / float(difficulty)) if difficulty and best else 0.0
-    soft = min(40.0, shares_ok * 0.5) if shares_ok else 0
-    effort_bar = max(effort, soft)
-    bal = float(balance) if balance is not None else 0.0
+    effort = min(100.0, 100.0 * best / difficulty) if difficulty and best else 0.0
+    last_pct = min(100.0, 100.0 * last_work / difficulty) if difficulty and last_work else 0.0
     holding = get_holding_address()
     addr_ok, addr_msg = validate_holding(holding)
+    mat = maturity_info(height, stats.get("blocks_log") or [])
+    return {
+        "synced": synced,
+        "height": height,
+        "difficulty": difficulty,
+        "difficulty_fmt": fmt_diff(difficulty),
+        "hashrate_fmt": fmt_hashrate(hr),
+        "balance_trusted": wbal["trusted"],
+        "balance_immature": wbal["immature"],
+        "balance_fmt": f"{wbal['trusted']:.4f}",
+        "immature_fmt": f"{wbal['immature']:.4f}",
+        "blocks_found": blocks_found,
+        "rewards": rewards,
+        "rewards_fmt": f"{rewards:.4f}",
+        "effort_pct": round(effort, 4),
+        "last_pct": round(last_pct, 4),
+        "eta_fmt": fmt_duration(eta),
+        "best_share": best,
+        "best_share_fmt": fmt_diff(best),
+        "last_share_work": last_work,
+        "last_share_work_fmt": fmt_diff(last_work),
+        "shares_ok": shares_ok,
+        "shares_bad": shares_bad,
+        "reject_pct": round(reject_pct, 1),
+        "share_diff": share_diff,
+        "share_diff_fmt": fmt_diff(share_diff),
+        "last_share_time": stats.get("last_share_time"),
+        "last_share_hash": stats.get("last_share_hash"),
+        "payout": holding,
+        "addr_ok": addr_ok,
+        "addr_msg": addr_msg,
+        "workers": stats.get("workers") or {},
+        "started_at": stats.get("started_at"),
+        "connections": connections,
+        "rpc_host": RPC_HOST,
+        "rpc_port": RPC_PORT,
+        "recent_shares": list(reversed(stats.get("recent_shares") or []))[:25],
+        "blocks_log": list(reversed(mat))[:10],
+        "maturity_blocks": COINBASE_MATURITY,
+        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
-    return render_template(
-        "dashboard.html",
-        synced=synced,
-        height=height,
-        difficulty_fmt=fmt_diff(difficulty),
-        hashrate_fmt=fmt_hashrate(hr),
-        balance_fmt=f"{bal:.4f}",
-        blocks_found=blocks_found,
-        rewards_fmt=f"{rewards:.4f}",
-        effort_pct=f"{effort:.2f}",
-        effort_bar=f"{effort_bar:.1f}",
-        eta_fmt=fmt_duration(eta),
-        best_share_fmt=fmt_diff(best),
-        shares_ok=shares_ok,
-        shares_bad=shares_bad,
-        reject_pct=reject_pct,
-        share_diff_fmt=fmt_diff(share_diff),
-        last_share_time=stats.get("last_share_time"),
-        last_share_hash=stats.get("last_share_hash"),
-        threshold_fmt=f"{PAYOUT_THRESHOLD:.2f}",
-        payout=holding,
-        addr_ok=addr_ok,
-        addr_msg=addr_msg,
-        workers=stats.get("workers") or {},
-        started_at=stats.get("started_at"),
-        connections=connections,
-        rpc_host=RPC_HOST,
-        rpc_port=RPC_PORT,
-        now=time.strftime("%Y-%m-%d %H:%M:%S"),
-    )
+
+@app.route("/")
+def index():
+    p = build_payload()
+    return render_template("dashboard.html", **p)
 
 
 @app.route("/api/status")
 def api_status():
-    info = rpc("getblockchaininfo") or {}
-    holding = get_holding_address()
-    addr_ok, addr_msg = validate_holding(holding)
-    stats = load_stats()
-    share_diff = stats.get("last_share_diff") or cfg["pool"].get("start_difficulty", 256)
-    hr = estimate_hashrate(stats, share_diff)
-    return jsonify({
-        "synced": not info.get("initialblockdownload", True),
-        "height": info.get("blocks"),
-        "difficulty": info.get("difficulty"),
-        "balance": rpc("getbalance"),
-        "holding_address": holding,
-        "address_valid": addr_ok,
-        "address_status": addr_msg,
-        "hashrate_fmt": fmt_hashrate(hr),
-        "stats": stats,
-        "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-    })
+    return jsonify(build_payload())
 
 
 @app.route("/api/logs")
@@ -271,6 +309,7 @@ def api_logs():
         "best_share_diff": stats.get("best_share_diff", 0),
         "last_share_time": stats.get("last_share_time"),
         "last_share_hash": stats.get("last_share_hash"),
+        "last_share_work": stats.get("last_share_work"),
         "workers": list((stats.get("workers") or {}).keys()),
         "holding": get_holding_address(),
         "balance": rpc("getbalance"),
