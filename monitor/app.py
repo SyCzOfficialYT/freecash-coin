@@ -4,6 +4,7 @@ from flask import Flask, render_template, jsonify
 import yaml, json, requests, time, re, os
 from requests.auth import HTTPBasicAuth
 from pathlib import Path
+from datetime import datetime
 
 app = Flask(__name__, template_folder="templates")
 ROOT = Path(__file__).resolve().parent.parent
@@ -14,8 +15,8 @@ if not CONFIG_PATH.exists():
 EVENTS_PATH = ROOT / "data" / "events.jsonl"
 STRATUM_LOG = ROOT / "data" / "stratum.log"
 STATS_PATH = ROOT / "data" / "stats.json"
-# FCH coinbase validity (user/spec): 144 blocks ≈ 2.4 h at 1 min/block
 COINBASE_MATURITY = 144
+HR_WINDOW_SEC = 600  # 10 minutes for hashrate estimate
 
 
 def load_cfg():
@@ -79,7 +80,6 @@ def load_stats():
 
 
 def wallet_balances():
-    """confirmed = trusted/spendable, unconfirmed = immature coinbase + pending."""
     out = {"confirmed": 0.0, "unconfirmed": 0.0, "immature": 0.0, "pending": 0.0}
     gb = rpc("getbalances")
     if isinstance(gb, dict) and "mine" in gb:
@@ -92,7 +92,6 @@ def wallet_balances():
     bal = rpc("getbalance")
     if bal is not None:
         out["confirmed"] = float(bal)
-    # fallback immature via getwalletinfo
     wi = rpc("getwalletinfo")
     if isinstance(wi, dict):
         out["immature"] = float(wi.get("immature_balance") or 0)
@@ -164,19 +163,54 @@ def load_events(limit: int = 100):
     return lines[-limit:]
 
 
-def estimate_hashrate(stats, share_diff):
-    ok = stats.get("shares_ok") or 0
-    if ok < 2 or not share_diff:
+def _parse_ts(ts):
+    if not ts:
         return None
-    started = stats.get("started_at")
-    if not started:
-        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S,%f"):
+        try:
+            return time.mktime(datetime.strptime(ts[:26], fmt.replace(",%f", "")).timetuple()) if "," not in fmt else time.mktime(datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S").timetuple())
+        except Exception:
+            continue
     try:
-        t0 = time.mktime(time.strptime(started, "%Y-%m-%d %H:%M:%S"))
-        elapsed = max(time.time() - t0, 1)
-        return (ok * float(share_diff) * (2**32)) / elapsed
+        return time.mktime(datetime.strptime(str(ts)[:19], "%Y-%m-%d %H:%M:%S").timetuple())
     except Exception:
         return None
+
+
+def estimate_hashrate(stats, share_diff_fallback):
+    """Hashrate from recent accepted shares (sliding window), not lifetime avg."""
+    now = time.time()
+    recent = stats.get("recent_shares") or []
+    window = []
+    for s in recent:
+        if not s.get("ok", True):
+            continue
+        t = _parse_ts(s.get("ts"))
+        if t is None or now - t > HR_WINDOW_SEC:
+            continue
+        # use pool_diff of that share (minimum difficulty credited)
+        d = float(s.get("pool_diff") or share_diff_fallback or 0)
+        if d > 0:
+            window.append((t, d))
+
+    if len(window) >= 2:
+        t_min = min(t for t, _ in window)
+        t_max = max(t for t, _ in window)
+        elapsed = max(t_max - t_min, 1.0)
+        # if window still filling, use full HR_WINDOW_SEC as lower bound on rate stability
+        if now - t_min < HR_WINDOW_SEC:
+            elapsed = max(elapsed, now - t_min)
+        work_sum = sum(d for _, d in window)
+        return (work_sum * (2**32)) / elapsed
+
+    # fallback: last N minutes from totals is bad; use last share only if very fresh
+    ok = stats.get("shares_ok") or 0
+    sd = float(share_diff_fallback or 0)
+    last_t = _parse_ts(stats.get("last_share_time"))
+    if ok >= 3 and sd > 0 and last_t and now - last_t < 120:
+        # crude: assume shares_ok in last 2 min unknown – skip lifetime
+        return None
+    return None
 
 
 def fmt_hashrate(hps):
@@ -184,10 +218,11 @@ def fmt_hashrate(hps):
         return "–"
     units = ["H/s", "kH/s", "MH/s", "GH/s", "TH/s", "PH/s"]
     i = 0
-    while hps >= 1000 and i < len(units) - 1:
-        hps /= 1000
+    v = float(hps)
+    while v >= 1000 and i < len(units) - 1:
+        v /= 1000
         i += 1
-    return f"{hps:.2f} {units[i]}"
+    return f"{v:.2f} {units[i]}"
 
 
 def fmt_diff(d):
@@ -209,7 +244,7 @@ def fmt_diff(d):
 def eta_seconds(network_diff, hashrate):
     if not network_diff or not hashrate or hashrate <= 0:
         return None
-    return (network_diff * (2**32)) / hashrate
+    return (float(network_diff) * (2**32)) / hashrate
 
 
 def fmt_duration(sec):
@@ -255,6 +290,7 @@ def build_payload():
         "difficulty": difficulty,
         "difficulty_fmt": fmt_diff(difficulty),
         "hashrate_fmt": fmt_hashrate(hr),
+        "hashrate_raw": hr,
         "confirmed": wbal["confirmed"],
         "unconfirmed": wbal["unconfirmed"],
         "immature": wbal["immature"],
@@ -326,7 +362,6 @@ def api_logs():
 if __name__ == "__main__":
     host = cfg.get("monitor", {}).get("host", "0.0.0.0")
     port = int(cfg.get("monitor", {}).get("port", 5050))
-    # hard default 5050 – never silent-fail on Synology 5000
     if port in (5000, 5001):
         port = 5050
     app.run(host=host, port=port, debug=False)
