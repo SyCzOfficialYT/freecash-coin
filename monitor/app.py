@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FreeCash Solo Dashboard – live shares, maturity, holding wallet"""
+"""FreeCash Solo Dashboard – unconfirmed→confirmed, maturity 144, port 5050"""
 from flask import Flask, render_template, jsonify
 import yaml, json, requests, time, re, os
 from requests.auth import HTTPBasicAuth
@@ -14,7 +14,8 @@ if not CONFIG_PATH.exists():
 EVENTS_PATH = ROOT / "data" / "events.jsonl"
 STRATUM_LOG = ROOT / "data" / "stratum.log"
 STATS_PATH = ROOT / "data" / "stats.json"
-COINBASE_MATURITY = 14400  # FCH: ~10 days at 1 min/block
+# FCH coinbase validity (user/spec): 144 blocks ≈ 2.4 h at 1 min/block
+COINBASE_MATURITY = 144
 
 
 def load_cfg():
@@ -78,38 +79,44 @@ def load_stats():
 
 
 def wallet_balances():
-    """trusted / immature from node."""
-    out = {"trusted": 0.0, "immature": 0.0, "unconfirmed": 0.0}
+    """confirmed = trusted/spendable, unconfirmed = immature coinbase + pending."""
+    out = {"confirmed": 0.0, "unconfirmed": 0.0, "immature": 0.0, "pending": 0.0}
     gb = rpc("getbalances")
     if isinstance(gb, dict) and "mine" in gb:
         m = gb["mine"]
-        out["trusted"] = float(m.get("trusted") or 0)
+        out["confirmed"] = float(m.get("trusted") or 0)
         out["immature"] = float(m.get("immature") or 0)
-        out["unconfirmed"] = float(m.get("untrusted_pending") or 0)
+        out["pending"] = float(m.get("untrusted_pending") or 0)
+        out["unconfirmed"] = out["immature"] + out["pending"]
         return out
     bal = rpc("getbalance")
     if bal is not None:
-        out["trusted"] = float(bal)
+        out["confirmed"] = float(bal)
+    # fallback immature via getwalletinfo
+    wi = rpc("getwalletinfo")
+    if isinstance(wi, dict):
+        out["immature"] = float(wi.get("immature_balance") or 0)
+        out["unconfirmed"] = out["immature"] + float(wi.get("unconfirmed_balance") or 0)
     return out
 
 
 def maturity_info(height, blocks_log):
-    """For each found block: confs left until spendable."""
     rows = []
     for b in blocks_log or []:
-        bh = b.get("height") or 0
-        mature_at = b.get("mature_at_height") or (bh + COINBASE_MATURITY)
+        bh = int(b.get("height") or 0)
+        mature_at = int(b.get("mature_at_height") or (bh + COINBASE_MATURITY))
         left = max(0, mature_at - height)
+        confs = min(COINBASE_MATURITY, max(0, height - bh))
         rows.append({
             "height": bh,
             "hash": (b.get("hash") or "")[:16],
             "reward": b.get("reward"),
             "ts": b.get("ts"),
             "mature_at": mature_at,
-            "confs": min(COINBASE_MATURITY, max(0, height - bh)),
+            "confs": confs,
             "left": left,
             "spendable": left <= 0,
-            "eta_min": left,  # 1 min/block
+            "eta_min": left,
         })
     return rows
 
@@ -248,10 +255,11 @@ def build_payload():
         "difficulty": difficulty,
         "difficulty_fmt": fmt_diff(difficulty),
         "hashrate_fmt": fmt_hashrate(hr),
-        "balance_trusted": wbal["trusted"],
-        "balance_immature": wbal["immature"],
-        "balance_fmt": f"{wbal['trusted']:.4f}",
-        "immature_fmt": f"{wbal['immature']:.4f}",
+        "confirmed": wbal["confirmed"],
+        "unconfirmed": wbal["unconfirmed"],
+        "immature": wbal["immature"],
+        "confirmed_fmt": f"{wbal['confirmed']:.8f}".rstrip("0").rstrip(".") or "0",
+        "unconfirmed_fmt": f"{wbal['unconfirmed']:.8f}".rstrip("0").rstrip(".") or "0",
         "blocks_found": blocks_found,
         "rewards": rewards,
         "rewards_fmt": f"{rewards:.4f}",
@@ -286,8 +294,7 @@ def build_payload():
 
 @app.route("/")
 def index():
-    p = build_payload()
-    return render_template("dashboard.html", **p)
+    return render_template("dashboard.html", **build_payload())
 
 
 @app.route("/api/status")
@@ -312,7 +319,6 @@ def api_logs():
         "last_share_work": stats.get("last_share_work"),
         "workers": list((stats.get("workers") or {}).keys()),
         "holding": get_holding_address(),
-        "balance": rpc("getbalance"),
     }
     return jsonify({"events": events, "snapshot": snapshot, "ts": time.strftime("%Y-%m-%d %H:%M:%S")})
 
@@ -320,4 +326,7 @@ def api_logs():
 if __name__ == "__main__":
     host = cfg.get("monitor", {}).get("host", "0.0.0.0")
     port = int(cfg.get("monitor", {}).get("port", 5050))
+    # hard default 5050 – never silent-fail on Synology 5000
+    if port in (5000, 5001):
+        port = 5050
     app.run(host=host, port=port, debug=False)
