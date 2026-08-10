@@ -75,7 +75,7 @@
 <div class="holding ok">
   <div class="label">Holding-Adresse · Coinbase · Exchange-Deposit</div>
   <div class="addr" id="holdingAddr">{{ payout }}</div>
-  <div class="hint">Block → <strong>Unconfirmed</strong> → nach <strong>{{ maturity_blocks }} Blöcken</strong> (~{{ (maturity_blocks/60)|int if maturity_blocks else 2 }}h) → <strong>Confirmed</strong> (Börse)</div>
+  <div class="hint">Block → <strong>Unconfirmed</strong> → nach <strong>{{ maturity_blocks }} Blöcken</strong> (~{{ (maturity_blocks)|int if maturity_blocks else 14400 }} min) → <strong>Confirmed</strong> (Börse)</div>
 </div>
 
 <section class="net-stats">
@@ -102,16 +102,17 @@
   </div>
 
   <div class="round-card">
-    <h2>Live Competition · Nähe zum Block</h2>
+    <h2>Live Competition · aktuelle Runde (Reset bei neuem Block)</h2>
     <div class="round-meta">
       <div><span>Target</span> <strong id="vDiff2">{{ difficulty_fmt }}</strong></div>
       <div><span>Best share</span> <strong id="vBest">{{ best_share_fmt }}</strong></div>
-      <div><span>Best vs net</span> <strong id="vEffort">{{ effort_pct }}%</strong></div>
+      <div><span>Best vs net</span> <strong id="vBestPct">{{ best_pct }}%</strong></div>
+      <div><span>Round effort</span> <strong id="vEffort">{{ effort_pct }}%</strong></div>
       <div><span>Last work</span> <strong id="vLastWork">{{ last_share_work_fmt }}</strong></div>
       <div><span>Last vs net</span> <strong id="vLastPct">{{ last_pct }}%</strong></div>
       <div><span>Est. block</span> <strong id="vEta">{{ eta_fmt }}</strong></div>
     </div>
-    <div class="progress-track"><div class="progress-fill" id="effortBar" style="width:{{ effort_pct }}%;"></div></div>
+    <div class="progress-track"><div class="progress-fill" id="effortBar" style="width:{{ [effort_pct, 100]|min }}%;"></div></div>
   </div>
 
   <div class="grid2">
@@ -128,7 +129,7 @@
       <h3>Wallet</h3>
       <div class="stat-row"><span class="k">Unconfirmed</span><span class="v yellow" id="vUnc3">{{ unconfirmed_fmt }} FCH</span></div>
       <div class="stat-row"><span class="k">Confirmed</span><span class="v ok" id="vConf3">{{ confirmed_fmt }} FCH</span></div>
-      <div class="stat-row"><span class="k">Lifetime rewards</span><span class="v" id="vRew">{{ rewards_fmt }} FCH</span></div>
+      <div class="stat-row"><span class="k">Total rewards</span><span class="v" id="vRew">{{ rewards_fmt }} FCH</span></div>
       <div class="stat-row"><span class="k">Validity</span><span class="v">{{ maturity_blocks }} Blöcke</span></div>
       <div class="stat-row"><span class="k">NerdQaxe User</span><span class="v cyan" style="font-size:0.72rem;max-width:58%;word-break:break-all" id="vUser">{{ payout }}.nerdq1</span></div>
     </div>
@@ -152,7 +153,7 @@
     <div id="term"></div>
   </div>
 </main>
-<footer>Dashboard permanent <code>:5050</code> · ASIC Pass <code>x</code><br><span id="footerTs">…</span></footer>
+<footer>Dashboard permanent <code>:5050</code> · ASIC Pass <code>d=13354</code><br><span id="footerTs">…</span></footer>
 <script>
 (function () {
   const term = document.getElementById('term');
@@ -172,14 +173,15 @@
     m = Number(m||0);
     if (m <= 0) return 'CONFIRMED';
     if (m < 60) return m + ' Blöcke';
-    return Math.floor(m/60) + 'h ' + (m%60) + 'm';
+    if (m < 1440) return Math.floor(m/60) + 'h ' + (m%60) + 'm';
+    return Math.floor(m/1440) + 'd ' + Math.floor((m%1440)/60) + 'h';
   }
   function renderShares(rows) {
     const tb = document.getElementById('sharesBody');
     if (!rows || !rows.length) { tb.innerHTML = '<tr><td colspan="5" style="color:var(--muted)">warte…</td></tr>'; return; }
     tb.innerHTML = rows.map(function (r) {
       const pct = Math.min(100, Number(r.pct)||0);
-      return '<tr><td>'+esc(r.ts)+'</td><td>'+esc(fmtDiff(r.work))+'</td><td><span class="pct-bar"><span class="pct-fill" style="width:'+pct+'%"></span></span>'+pct.toFixed(3)+'%</td><td class="v cyan">'+esc(r.hash)+'</td><td>'+esc(r.height)+'</td></tr>';
+      return '<tr><td>'+esc(r.ts)+'</td><td>'+esc(fmtDiff(r.work))+'</td><td><span class="pct-bar"><span class="pct-fill" style="width:'+pct+'%"></span></span>'+Number(r.pct||0).toFixed(3)+'%</td><td class="v cyan">'+esc(r.hash)+'</td><td>'+esc(r.height)+'</td></tr>';
     }).join('');
   }
   function renderBlocks(rows) {
@@ -188,7 +190,7 @@
     box.innerHTML = rows.map(function (b) {
       const st = b.spendable
         ? '<span class="v ok">CONFIRMED</span>'
-        : '<span class="v yellow">'+b.confs+'/144 · noch '+fmtDurMin(b.left)+'</span>';
+        : '<span class="v yellow">'+b.confs+'/'+(b.mature_at - b.height + b.confs || 14400)+' · noch '+fmtDurMin(b.left)+'</span>';
       return '<div class="stat-row"><span class="k">#'+esc(b.height)+' · '+esc(b.hash)+' · '+esc(b.reward)+' FCH</span>'+st+'</div>';
     }).join('');
   }
@@ -212,10 +214,12 @@
     document.getElementById('vLastT').textContent = d.last_share_time||'–';
     document.getElementById('vLastH').textContent = d.last_share_hash||'–';
     document.getElementById('vBest').textContent = d.best_share_fmt||'–';
+    document.getElementById('vBestPct').textContent = (d.best_pct!=null?d.best_pct:0)+'%';
     document.getElementById('vEffort').textContent = (d.effort_pct!=null?d.effort_pct:0)+'%';
     document.getElementById('vLastWork').textContent = d.last_share_work_fmt||'–';
     document.getElementById('vLastPct').textContent = (d.last_pct!=null?d.last_pct:0)+'%';
     document.getElementById('vEta').textContent = d.eta_fmt||'∞';
+    // Bar shows round effort, capped visually at 100% but text can exceed
     document.getElementById('effortBar').style.width = Math.min(100, Number(d.effort_pct)||0)+'%';
     if (d.payout) { document.getElementById('holdingAddr').textContent = d.payout; document.getElementById('vUser').textContent = d.payout+'.nerdq1'; }
     renderShares(d.recent_shares);
