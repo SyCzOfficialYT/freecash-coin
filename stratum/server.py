@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """FreeCash Solo Stratum – soft VarDiff + grace window + 2-out coinbase (miner+dev)"""
-import socket, threading, json, time, struct, hashlib, logging, binascii, os, sys
+import socket, threading, json, time, struct, hashlib, logging, binascii, os, sys, re
 from pathlib import Path
 from datetime import datetime
 import yaml, requests
@@ -229,6 +229,23 @@ def get_dev_reward_sats(height):
         return INITIAL_REWARD_SATS >> LAST_HALVING
     return INITIAL_REWARD_SATS >> halvings
 
+def parse_fixed_diff(*candidates):
+    """Parse d=13354 / d:13354 / diff=13354 from password or worker string."""
+    for raw in candidates:
+        if not raw or not isinstance(raw, str):
+            continue
+        m = re.search(r"(?:^|[;,\s])(?:d|diff)\s*[=:]\s*(\d+(?:\.\d+)?)", raw, re.I)
+        if not m:
+            m = re.match(r"^(?:d|diff)\s*[=:]\s*(\d+(?:\.\d+)?)$", raw.strip(), re.I)
+        if m:
+            try:
+                d = float(m.group(1))
+                if 16 <= d <= MAX_DIFF:
+                    return int(round(d))
+            except Exception:
+                pass
+    return None
+
 def build_coinbase_parts(height, miner_value_sats, miner_spk, dev_spk, en1_size=4, en2_size=4):
     """
     FreeCash coinbase MUST have exactly 2 outputs:
@@ -391,11 +408,16 @@ class Client(threading.Thread):
 
     def effective_min_diff(self):
         """During grace, accept the lower of old/new so in-flight shares pass."""
+        if self.diff_from_password:
+            return self.diff
         if time.time() - self.diff_changed_at < DIFF_GRACE_SEC:
             return min(self.diff, self.diff_prev)
         return self.diff
 
     def set_diff(self, d, reason=""):
+        # Never override a password-fixed difficulty
+        if self.diff_from_password:
+            return
         d = int(max(MIN_DIFF, min(MAX_DIFF, d)))
         if d == self.diff:
             return
@@ -452,23 +474,21 @@ class Client(threading.Thread):
     def handle_authorize(self, mid, params):
         self.worker = params[0] if params else "?"
         password = params[1] if len(params) > 1 else ""
-        if isinstance(password, str) and password.lower().startswith("d="):
-            try:
-                d = float(password[2:].strip())
-                if 16 <= d <= 10_000_000:
-                    self.diff = max(MIN_DIFF, int(round(d)))
-                    self.diff_prev = self.diff
-                    self.diff_from_password = True
-            except Exception:
-                pass
+        fixed = parse_fixed_diff(password, self.worker)
+        if fixed is not None:
+            self.diff = fixed
+            self.diff_prev = fixed
+            self.diff_from_password = True
+            emit("INFO", f"FIXED DIFF from password: {fixed} (VarDiff OFF)")
         self.send({"id": mid, "result": True, "error": None})
         self.send({"id": None, "method": "mining.set_difficulty", "params": [self.diff]})
         self.diff_changed_at = time.time()
-        emit("INFO", f"authorize {self.worker} diff={self.diff} vardiff={VARDIFF and not self.diff_from_password}")
+        mode = "fixed" if self.diff_from_password else f"vardiff={VARDIFF}"
+        emit("INFO", f"authorize {self.worker} diff={self.diff} mode={mode}")
         self.push_job(clean=True, force_refresh=True)
 
     def handle_suggest_difficulty(self, mid, params):
-        # Ignore – prevents ASIC from forcing 1000
+        # Ignore – prevents ASIC from forcing 1000; password-fixed stays fixed
         self.send({"id": mid, "result": True, "error": None})
 
     def push_job(self, clean=True, force_refresh=False):
@@ -675,6 +695,7 @@ def main():
     emit("INFO", f"Stratum+VarDiff soft start_diff={max(START_DIFF,MIN_DIFF)} grace={DIFF_GRACE_SEC}s")
     emit("INFO", f"Payout {PAYOUT_ADDRESS}")
     emit("INFO", f"Dev/governance output → {DEV_ADDRESS} (2-out coinbase required by FreeCash)")
+    emit("INFO", "Fixed difficulty: set miner password to d=13354 (or d:13354)")
     try:
         store.ensure_spk(); store.refresh()
     except Exception as e:
