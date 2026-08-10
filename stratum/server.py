@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""FreeCash Solo Stratum – soft VarDiff + grace window (no lowdiff storm)"""
+"""FreeCash Solo Stratum – soft VarDiff + grace window + 2-out coinbase (miner+dev)"""
 import socket, threading, json, time, struct, hashlib, logging, binascii, os, sys
 from pathlib import Path
 from datetime import datetime
@@ -34,6 +34,14 @@ STATS_PATH = ROOT / "data" / "stats.json"
 EVENTS_PATH = ROOT / "data" / "events.jsonl"
 LOCK_PATH = ROOT / "data" / "stratum.lock"
 STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+# FreeCash consensus: coinbase MUST have 2 outputs
+# vout[0] = miner (fees + GetBlockSubsidy)  — from GBT coinbasevalue
+# vout[1] = governance/dev (GetBlockRewardSubsidy) — fixed address
+DEV_ADDRESS = "FTqiqAyXHnK7uDTXzMap3acvqADK4ZGzts"
+INITIAL_REWARD_SATS = 25 * 100_000_000  # 25 FCH
+SUBSIDY_HALVING_INTERVAL = 576_000
+LAST_HALVING = 21
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("fch-stratum")
@@ -214,14 +222,38 @@ def bip34_height(height):
         b += bytes([h & 0xFF]); h >>= 8
     return bytes([len(b)]) + b
 
-def build_coinbase_parts(height, value_sats, script_pubkey, en1_size=4, en2_size=4):
+def get_dev_reward_sats(height):
+    """GetBlockRewardSubsidy — matches freecashd validation.cpp"""
+    halvings = height // SUBSIDY_HALVING_INTERVAL
+    if halvings >= LAST_HALVING:
+        return INITIAL_REWARD_SATS >> LAST_HALVING
+    return INITIAL_REWARD_SATS >> halvings
+
+def build_coinbase_parts(height, miner_value_sats, miner_spk, dev_spk, en1_size=4, en2_size=4):
+    """
+    FreeCash coinbase MUST have exactly 2 outputs:
+      vout[0] = miner (coinbasevalue from GBT = fees + GetBlockSubsidy)
+      vout[1] = governance/dev (GetBlockRewardSubsidy → DEV_ADDRESS)
+    """
     tag = b"/FCH-Solo/"
     height_script = bip34_height(height)
     scriptsig_len = len(height_script) + en1_size + en2_size + len(tag)
+    dev_value = get_dev_reward_sats(height)
+
+    # version(4) + vin_count(1) + prevout(32+4) + scriptsig_len + height
     part1 = struct.pack("<I", 2) + b"\x01" + b"\x00" * 32 + struct.pack("<I", 0xFFFFFFFF)
     part1 += encode_varint(scriptsig_len) + height_script
-    part2 = tag + struct.pack("<I", 0xFFFFFFFF) + b"\x01" + struct.pack("<Q", value_sats)
-    part2 += encode_varint(len(script_pubkey)) + script_pubkey + struct.pack("<I", 0)
+
+    # tag + nSequence + vout_count=2
+    #   + miner value + miner spk
+    #   + dev value + dev spk
+    #   + locktime
+    part2 = tag + struct.pack("<I", 0xFFFFFFFF) + b"\x02"
+    part2 += struct.pack("<Q", int(miner_value_sats))
+    part2 += encode_varint(len(miner_spk)) + miner_spk
+    part2 += struct.pack("<Q", int(dev_value))
+    part2 += encode_varint(len(dev_spk)) + dev_spk
+    part2 += struct.pack("<I", 0)
     return binascii.hexlify(part1).decode(), binascii.hexlify(part2).decode()
 
 def assemble_coinbase(coinb1, en1, en2, coinb2):
@@ -244,12 +276,16 @@ class JobStore:
         self.last_prevhash = None
         self.last_height = None
         self.script_pubkey = None
+        self.dev_spk = None
         self.network_diff = 0.0
 
     def ensure_spk(self):
         if self.script_pubkey is None:
             self.script_pubkey = address_to_scriptpubkey(PAYOUT_ADDRESS)
             emit("INFO", f"scriptPubKey ready for {PAYOUT_ADDRESS}")
+        if self.dev_spk is None:
+            self.dev_spk = address_to_scriptpubkey(DEV_ADDRESS)
+            emit("INFO", f"dev/governance scriptPubKey ready for {DEV_ADDRESS}")
 
     def refresh(self):
         self.ensure_spk()
@@ -263,6 +299,7 @@ class JobStore:
         nbits_s = nbits if isinstance(nbits, str) else f"{nbits:08x}"
         other_tx = [binascii.unhexlify(tx["txid"])[::-1] for tx in tmpl.get("transactions", [])]
         net_diff = target_to_difficulty(bits_to_target(nbits))
+        dev_sats = get_dev_reward_sats(height)
         with self.lock:
             self.network_diff = net_diff
             if (self.current_id and self.last_height == height and self.last_prevhash == prevhash
@@ -271,15 +308,18 @@ class JobStore:
                 job["ntime"] = tmpl["curtime"]
                 job["template"] = tmpl
                 job["value"] = tmpl["coinbasevalue"]
+                job["dev_value"] = dev_sats
                 job["other_tx"] = other_tx
                 job["net_diff"] = net_diff
                 return job, False
             job_id = f"{height:x}-{int(time.time()) & 0xFFFFFF:x}"
             job = {
                 "id": job_id, "height": height, "value": tmpl["coinbasevalue"],
+                "dev_value": dev_sats,
                 "prevhash": prevhash, "version": tmpl["version"], "nbits": nbits_s,
                 "ntime": tmpl["curtime"], "target": bits_to_target(nbits),
                 "net_diff": net_diff, "template": tmpl, "spk": self.script_pubkey,
+                "dev_spk": self.dev_spk,
                 "other_tx": other_tx, "created": time.time(),
             }
             self.jobs[job_id] = job
@@ -296,7 +336,8 @@ class JobStore:
             if prev_h != height:
                 _reset_round(height, net_diff)
                 emit("INFO", f"NEW ROUND height={height} netdiff={net_diff:.0f}")
-            emit("INFO", f"Job {job_id} height={height} value={job['value']/1e8:.8f} FCH")
+            emit("INFO", f"Job {job_id} height={height} miner={job['value']/1e8:.8f} "
+                 f"dev={dev_sats/1e8:.8f} FCH (2-out coinbase)")
             return job, True
 
     def get(self, job_id):
@@ -433,7 +474,10 @@ class Client(threading.Thread):
                 job, clean_flag = store.refresh()
                 if job is None: return
                 clean = clean_flag
-        coinb1, coinb2 = build_coinbase_parts(job["height"], job["value"], job["spk"], len(self.en1), self.en2_size)
+        coinb1, coinb2 = build_coinbase_parts(
+            job["height"], job["value"], job["spk"], job["dev_spk"],
+            len(self.en1), self.en2_size,
+        )
         branches, hashes = [], job["other_tx"][:]
         while hashes:
             branches.append(binascii.hexlify(hashes[0][::-1]).decode())
@@ -474,7 +518,10 @@ class Client(threading.Thread):
             self.send({"id": mid, "result": False, "error": [20, "bad hex", None]})
             _bump_worker(self.worker, False); _save_stats(); return
 
-        coinb1, coinb2 = build_coinbase_parts(job["height"], job["value"], job["spk"], len(self.en1), self.en2_size)
+        coinb1, coinb2 = build_coinbase_parts(
+            job["height"], job["value"], job["spk"], job["dev_spk"],
+            len(self.en1), self.en2_size,
+        )
         coinbase_tx = assemble_coinbase(coinb1, self.en1, en2, coinb2)
         merkle = full_merkle_root(sha256d(coinbase_tx), job["other_tx"])
         header = struct.pack("<I", version) + binascii.unhexlify(job["prevhash"])[::-1] + merkle
@@ -613,6 +660,7 @@ def main():
     _load_stats(); _save_stats()
     emit("INFO", f"Stratum+VarDiff soft start_diff={max(START_DIFF,MIN_DIFF)} grace={DIFF_GRACE_SEC}s")
     emit("INFO", f"Payout {PAYOUT_ADDRESS}")
+    emit("INFO", f"Dev/governance output → {DEV_ADDRESS} (2-out coinbase required by FreeCash)")
     try:
         store.ensure_spk(); store.refresh()
     except Exception as e:
