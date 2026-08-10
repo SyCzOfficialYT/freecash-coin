@@ -14,7 +14,7 @@ if not CONFIG_PATH.exists():
 EVENTS_PATH = ROOT / "data" / "events.jsonl"
 STRATUM_LOG = ROOT / "data" / "stratum.log"
 STATS_PATH = ROOT / "data" / "stats.json"
-COINBASE_MATURITY = 144
+COINBASE_MATURITY = 14400  # FreeCash consensus: coinbaseMaturity
 HR_WINDOW_SEC = 600
 
 def load_cfg():
@@ -192,17 +192,16 @@ def build_payload():
     shares_bad = stats.get("shares_bad") or 0
     total = shares_ok + shares_bad
     reject_pct = (100.0 * shares_bad / total) if total else 0.0
+    # Best share = best in CURRENT ROUND only (resets on new height)
     best = float(stats.get("best_share_diff") or stats.get("round_best") or 0)
     last_work = float(stats.get("last_share_work") or 0)
     share_diff = stats.get("last_share_diff") or cfg["pool"].get("start_difficulty", 10000)
     hr = estimate_hashrate(stats, share_diff)
     net_d = float(stats.get("network_diff") or difficulty or 1)
-    # live round effort from stratum (resets each new block)
+    # Round effort: sum(share diffs)/net_diff — can exceed 100% until block found
     effort = float(stats.get("round_effort_pct") or 0)
-    if not effort and net_d and best:
-        effort = min(100.0, 100.0 * best / net_d)
-    last_pct = min(100.0, 100.0 * last_work / net_d) if net_d and last_work else 0.0
-    best_pct = min(100.0, 100.0 * best / net_d) if net_d and best else 0.0
+    last_pct = (100.0 * last_work / net_d) if net_d and last_work else 0.0
+    best_pct = (100.0 * best / net_d) if net_d and best else 0.0
     eta = eta_seconds(net_d, hr) if hr else None
     holding = get_holding_address()
     addr_ok, addr_msg = validate_holding(holding)
@@ -238,6 +237,7 @@ def build_payload():
         "round_height": stats.get("round_height") or height,
         "round_shares": stats.get("round_shares") or 0,
         "round_work": stats.get("round_work") or 0,
+        "round_started_at": stats.get("round_started_at"),
         "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
 

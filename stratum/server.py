@@ -28,18 +28,14 @@ VARDIFF = bool(cfg["pool"].get("vardiff", True))
 TARGET_SHARE_SEC = float(cfg["pool"].get("vardiff_target_sec", 10))
 MIN_DIFF = int(cfg["pool"].get("vardiff_min", 1000))
 MAX_DIFF = int(cfg["pool"].get("vardiff_max", 50_000_000))
-# After set_difficulty, still accept old diff for this many seconds (ASIC lag)
 DIFF_GRACE_SEC = float(cfg["pool"].get("vardiff_grace_sec", 45))
 STATS_PATH = ROOT / "data" / "stats.json"
 EVENTS_PATH = ROOT / "data" / "events.jsonl"
 LOCK_PATH = ROOT / "data" / "stratum.lock"
 STATS_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-# FreeCash consensus: coinbase MUST have 2 outputs
-# vout[0] = miner (fees + GetBlockSubsidy)  — from GBT coinbasevalue
-# vout[1] = governance/dev (GetBlockRewardSubsidy) — fixed address
 DEV_ADDRESS = "FTqiqAyXHnK7uDTXzMap3acvqADK4ZGzts"
-INITIAL_REWARD_SATS = 25 * 100_000_000  # 25 FCH
+INITIAL_REWARD_SATS = 25 * 100_000_000
 SUBSIDY_HALVING_INTERVAL = 576_000
 LAST_HALVING = 21
 
@@ -55,7 +51,7 @@ _stats = {
     "last_share_diff": None, "last_share_hash": None, "last_share_work": None,
     "recent_shares": [], "blocks_log": [],
     "round_height": 0, "round_shares": 0, "round_work": 0.0, "round_best": 0.0,
-    "round_effort_pct": 0.0, "network_diff": 0.0,
+    "round_effort_pct": 0.0, "network_diff": 0.0, "round_started_at": None,
     "started_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
 }
 
@@ -78,7 +74,6 @@ def emit(level, msg):
         log.info("%s", msg)
 
 def _acquire_singleton():
-    """Prevent multiple stratum processes (causes chaos + lowdiff)."""
     import fcntl
     fp = open(LOCK_PATH, "w")
     try:
@@ -88,7 +83,7 @@ def _acquire_singleton():
         sys.exit(0)
     fp.write(str(os.getpid()))
     fp.flush()
-    return fp  # keep open
+    return fp
 
 def _load_stats():
     global _stats
@@ -117,14 +112,16 @@ def _bump_worker(name, ok=True):
             _stats["shares_bad"] = _stats.get("shares_bad", 0) + 1
 
 def _reset_round(height, net_diff):
+    """New network block → new round. Best share starts at 0 for this round only."""
     with _stats_lock:
         _stats["round_height"] = height
         _stats["round_shares"] = 0
         _stats["round_work"] = 0.0
         _stats["round_best"] = 0.0
+        _stats["best_share_diff"] = 0.0  # per-round best, reset on new block
         _stats["round_effort_pct"] = 0.0
         _stats["network_diff"] = net_diff
-        _stats["best_share_diff"] = 0
+        _stats["round_started_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
 def _add_round_share(pool_diff, share_work, net_diff, height):
     with _stats_lock:
@@ -133,15 +130,19 @@ def _add_round_share(pool_diff, share_work, net_diff, height):
             _stats["round_shares"] = 0
             _stats["round_work"] = 0.0
             _stats["round_best"] = 0.0
+            _stats["best_share_diff"] = 0.0
+            _stats["round_started_at"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
         _stats["round_shares"] = _stats.get("round_shares", 0) + 1
         _stats["round_work"] = float(_stats.get("round_work") or 0) + float(pool_diff)
+        # Best share: only overwrite when this share is strictly better
         if share_work > float(_stats.get("round_best") or 0):
             _stats["round_best"] = share_work
         if share_work > float(_stats.get("best_share_diff") or 0):
             _stats["best_share_diff"] = share_work
         nd = net_diff or _stats.get("network_diff") or 1.0
         _stats["network_diff"] = nd
-        _stats["round_effort_pct"] = min(100.0, 100.0 * float(_stats["round_work"]) / float(nd))
+        # Effort continues past 100% until a block is found (can be 200%+, 10min, ...)
+        _stats["round_effort_pct"] = 100.0 * float(_stats["round_work"]) / float(nd)
 
 def _record_share(worker, share_work, pool_diff, net_diff, hhex, height, accepted=True):
     pct = (100.0 * share_work / net_diff) if net_diff else 0.0
@@ -223,14 +224,12 @@ def bip34_height(height):
     return bytes([len(b)]) + b
 
 def get_dev_reward_sats(height):
-    """GetBlockRewardSubsidy — matches freecashd validation.cpp"""
     halvings = height // SUBSIDY_HALVING_INTERVAL
     if halvings >= LAST_HALVING:
         return INITIAL_REWARD_SATS >> LAST_HALVING
     return INITIAL_REWARD_SATS >> halvings
 
 def parse_fixed_diff(*candidates):
-    """Parse d=13354 / d:13354 / diff=13354 from password or worker string."""
     for raw in candidates:
         if not raw or not isinstance(raw, str):
             continue
@@ -247,24 +246,12 @@ def parse_fixed_diff(*candidates):
     return None
 
 def build_coinbase_parts(height, miner_value_sats, miner_spk, dev_spk, en1_size=4, en2_size=4):
-    """
-    FreeCash coinbase MUST have exactly 2 outputs:
-      vout[0] = miner (coinbasevalue from GBT = fees + GetBlockSubsidy)
-      vout[1] = governance/dev (GetBlockRewardSubsidy → DEV_ADDRESS)
-    """
     tag = b"/FCH-Solo/"
     height_script = bip34_height(height)
     scriptsig_len = len(height_script) + en1_size + en2_size + len(tag)
     dev_value = get_dev_reward_sats(height)
-
-    # version(4) + vin_count(1) + prevout(32+4) + scriptsig_len + height
     part1 = struct.pack("<I", 2) + b"\x01" + b"\x00" * 32 + struct.pack("<I", 0xFFFFFFFF)
     part1 += encode_varint(scriptsig_len) + height_script
-
-    # tag + nSequence + vout_count=2
-    #   + miner value + miner spk
-    #   + dev value + dev spk
-    #   + locktime
     part2 = tag + struct.pack("<I", 0xFFFFFFFF) + b"\x02"
     part2 += struct.pack("<Q", int(miner_value_sats))
     part2 += encode_varint(len(miner_spk)) + miner_spk
@@ -321,10 +308,6 @@ class JobStore:
 
         with self.lock:
             self.network_diff = net_diff
-
-            # Reuse same job ONLY if nothing that affects coinbase/merkle changed.
-            # CRITICAL: never overwrite job['value'] or other_tx – miner already
-            # has coinb1/coinb2 baked from the original notify.
             if (self.current_id and self.last_height == height and self.last_prevhash == prevhash
                     and self.current_id in self.jobs):
                 job = self.jobs[self.current_id]
@@ -332,12 +315,10 @@ class JobStore:
                             and all(a == b for a, b in zip(other_tx, job.get("other_tx") or [])))
                 same_value = int(job.get("value") or 0) == new_value
                 if same_txs and same_value:
-                    # Only ntime / template pointer may update; validation fields stay frozen
                     job["ntime"] = tmpl["curtime"]
                     job["template"] = tmpl
                     job["net_diff"] = net_diff
                     return job, False
-                # Fees or mempool changed → new job id so miners get matching coinb
 
             job_id = f"{height:x}-{int(time.time()) & 0xFFFFFF:x}"
             job = {
@@ -407,7 +388,6 @@ class Client(threading.Thread):
             self.running = False
 
     def effective_min_diff(self):
-        """During grace, accept the lower of old/new so in-flight shares pass."""
         if self.diff_from_password:
             return self.diff
         if time.time() - self.diff_changed_at < DIFF_GRACE_SEC:
@@ -415,7 +395,6 @@ class Client(threading.Thread):
         return self.diff
 
     def set_diff(self, d, reason=""):
-        # Never override a password-fixed difficulty
         if self.diff_from_password:
             return
         d = int(max(MIN_DIFF, min(MAX_DIFF, d)))
@@ -432,7 +411,6 @@ class Client(threading.Thread):
         if not VARDIFF or self.diff_from_password:
             return
         now = time.time()
-        # don't retarget during grace or with too few shares at current diff
         if now - self.diff_changed_at < DIFF_GRACE_SEC:
             return
         self.shares_since_retarget += 1
@@ -450,10 +428,9 @@ class Client(threading.Thread):
         if rate <= 0:
             return
         factor = rate / target_rate
-        # soft steps only ±30%
         factor = max(0.7, min(1.3, factor))
         if 0.9 <= factor <= 1.1:
-            return  # close enough
+            return
         new_d = int(self.diff * factor)
         if new_d >= 1_000_000:
             new_d = int(round(new_d / 50000) * 50000)
@@ -488,7 +465,6 @@ class Client(threading.Thread):
         self.push_job(clean=True, force_refresh=True)
 
     def handle_suggest_difficulty(self, mid, params):
-        # Ignore – prevents ASIC from forcing 1000; password-fixed stays fixed
         self.send({"id": mid, "result": True, "error": None})
 
     def push_job(self, clean=True, force_refresh=False):
@@ -541,7 +517,6 @@ class Client(threading.Thread):
             VERSION_MASK = 0x1FFFE000
             if version_hex:
                 sv = int(version_hex, 16)
-                # NerdQaxe often sends full version bits in the rolling field
                 if sv >= 0x20000000:
                     version = sv
                 else:
@@ -552,7 +527,6 @@ class Client(threading.Thread):
             self.send({"id": mid, "result": False, "error": [20, "bad hex", None]})
             _bump_worker(self.worker, False); _save_stats(); return
 
-        # ALWAYS use frozen job['value'] / other_tx from the original notify
         coinb1, coinb2 = build_coinbase_parts(
             job["height"], job["value"], job["spk"], job["dev_spk"],
             len(self.en1), self.en2_size,
@@ -573,7 +547,6 @@ class Client(threading.Thread):
             self.shares_bad += 1; _bump_worker(self.worker, False); _save_stats()
             return
 
-        # credit at the difficulty the share actually met (capped by current target band)
         if share_work >= self.diff:
             credited = self.diff
         elif share_work >= self.diff_prev and time.time() - self.diff_changed_at < DIFF_GRACE_SEC:
@@ -686,7 +659,7 @@ def stats_loop():
         with _stats_lock:
             s = dict(_stats)
         emit("INFO", f"STATS h={store.last_height} ok={s.get('shares_ok')} bad={s.get('shares_bad')} "
-             f"round={s.get('round_effort_pct',0):.2f}% rs={s.get('round_shares')}")
+             f"round={s.get('round_effort_pct',0):.2f}% rs={s.get('round_shares')} best={s.get('best_share_diff',0):.0f}")
 
 
 def main():
