@@ -5,7 +5,7 @@ from pathlib import Path
 here = Path(__file__).resolve().parent
 parts = sorted(here.glob("server.b64part*"))
 if not parts:
-    raise SystemExit("missing server.b64part* files")
+    raise SystemExit("missing server.b64part* files — git pull incomplete")
 b64 = "".join(p.read_text().strip() for p in parts)
 impl = here / "_server_impl.py"
 if not impl.exists() or impl.stat().st_size < 1000:
