@@ -11,7 +11,7 @@ pool:
   stratum_port: 3333
   stratum_host: "0.0.0.0"
   start_difficulty: 256
-  job_interval: 25
+  job_interval: 4
   payout_threshold: 10.0
 
 monitor:
