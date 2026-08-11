@@ -1,1 +1,31 @@
-PLACEHOLDER
+# FreeCash (FCH) Solo Node Configuration
+
+rpc:
+  host: "127.0.0.1"
+  port: 8332
+  user: "fchrpc"
+  password: "CHANGE_ME_SECURE_PASSWORD"
+  timeout: 30
+
+pool:
+  # FreeCash-Adresse (beginnt mit F), z.B. von: freecash-cli getnewaddress
+  payout_address: "Fxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+  stratum_port: 3333
+  stratum_host: "0.0.0.0"
+  start_difficulty: 5000
+  # Poll getblocktemplate this often (seconds). FreeCash ~60s blocks → 4s keeps tip fresh.
+  job_interval: 4
+  vardiff: true
+  vardiff_target_sec: 10
+  vardiff_min: 1000
+  vardiff_max: 50000000
+  vardiff_grace_sec: 45
+  payout_threshold: 10.0
+
+monitor:
+  host: "0.0.0.0"
+  port: 5050
+
+logging:
+  level: "INFO"
