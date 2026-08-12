@@ -1,0 +1,4 @@
+Run: curl -sL https://raw.githubusercontent.com/SyCzOfficialYT/freecash-coin/a88d89675b/stratum/server.py -o stratum/server.py
+Then apply sed for blog[-14400:] and job_interval 4.
+App: already on main with height_strip.
+Dashboard: use monitor/templates from a88d89675b until full UI restored.
