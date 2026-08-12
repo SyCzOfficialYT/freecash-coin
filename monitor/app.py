@@ -18,7 +18,7 @@ rpc_cfg = cfg["rpc"]
 log = logging.getLogger("monitor")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-COINBASE_MATURITY = 14400  # FreeCash consensus: coinbaseMaturity
+COINBASE_MATURITY = 14400
 
 def rpc(method, params=None):
     url = f"http://{rpc_cfg['host']}:{rpc_cfg['port']}"
@@ -62,7 +62,6 @@ def wallet_balances():
     return out
 
 def balances_merged(height, blocks_log, wbal):
-    """Confirmed after tip >= mature_at (14400), same as freecashd coinbaseMaturity."""
     immature_log = 0.0
     matured_log = 0.0
     for b in blocks_log or []:
@@ -176,8 +175,20 @@ def build_payload():
     holding = get_holding_address()
     addr_ok, addr_msg = validate_holding(holding)
     mat = maturity_info(height, blog)
+    found_set = {int(b.get("height") or 0) for b in blog}
+    strip_n = 12
+    height_strip = []
+    for h in range(max(0, height - strip_n + 1), height + 1):
+        height_strip.append({
+            "h": h,
+            "short": str(h)[-3:].zfill(3) if h >= 100 else str(h),
+            "found": h in found_set,
+            "current": h == height,
+        })
     return {
         "synced": synced, "height": height, "difficulty": difficulty,
+        "height_strip": height_strip,
+        "found_heights": sorted(found_set)[-50:],
         "difficulty_fmt": fmt_diff(net_d), "hashrate_fmt": fmt_hashrate(hr),
         "confirmed": confirmed, "unconfirmed": unconfirmed,
         "confirmed_fmt": f"{confirmed:.8f}",
