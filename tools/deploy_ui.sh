@@ -1,12 +1,16 @@
 #!/bin/sh
-# Deploy working FreeCash solo UI + stratum (no chain rebuild)
+# Deploy working FreeCash solo UI + stratum with persistent block history.
 set -e
 cd "$(dirname "$0")/.."
 
-echo "==> Fetch good server (a88d) + apply fixes"
-curl -fsSL "https://raw.githubusercontent.com/SyCzOfficialYT/freecash-coin/a88d89675b/stratum/server.py" -o stratum/server.py
+HISTORY_LIMIT=14400
+SERVER_REF="a88d89675b"
+
+printf '%s\n' "==> Fetch good server (${SERVER_REF}) + apply runtime fixes"
+curl -fsSL "https://raw.githubusercontent.com/SyCzOfficialYT/freecash-coin/${SERVER_REF}/stratum/server.py" -o stratum/server.py
 sed -i 's/job_interval", 20)/job_interval", 4)/' stratum/server.py
-sed -i 's/blog\[-20:\]/blog[-14400:]/' stratum/server.py
+sed -i "s/blog\\[-20:\\]/blog[-${HISTORY_LIMIT}:]/" stratum/server.py
+
 python3 -c "
 from pathlib import Path
 p=Path('stratum/server.py')
@@ -16,9 +20,18 @@ b='if job is not None:\n                if clean:\n                    broadcast
 if a in t:
     p.write_text(t.replace(a,b,1)); print('job_loop patched')
 else:
-    print('job_loop skip')
+    print('job_loop already patched')
 "
-python3 -c "import ast; ast.parse(open('stratum/server.py').read()); print('server OK')"
+
+python3 -c "
+import ast
+from pathlib import Path
+p=Path('stratum/server.py')
+ast.parse(p.read_text())
+t=p.read_text()
+assert f'blog[-{14400}:]' in t, 'persistent history patch missing'
+print('server OK; history limit=14400')
+"
 
 echo "==> Fetch monitor app"
 curl -fsSL "https://raw.githubusercontent.com/SyCzOfficialYT/freecash-coin/main/monitor/app.py" -o monitor/app.py
@@ -35,11 +48,13 @@ sudo docker cp monitor/templates/dashboard.html freecash-solo:/app/monitor/templ
 sudo docker exec freecash-solo mkdir -p /app/tools
 sudo docker cp tools/rebuild_blocks_log.py freecash-solo:/app/tools/rebuild_blocks_log.py
 
-echo "==> Rebuild blocks_log from wallet only"
-sudo docker exec freecash-solo python3 /app/tools/rebuild_blocks_log.py || true
+echo "==> Rebuild complete solo block history from wallet + recovery scan"
+sudo docker exec freecash-solo python3 /app/tools/rebuild_blocks_log.py
 
 echo "==> Restart"
 sudo docker restart freecash-solo
-sleep 6
-sudo docker exec freecash-solo python3 -c "import json; d=json.load(open('/app/data/stats.json')); print('disk log', len(d.get('blocks_log') or []))"
-echo "Done. Ctrl+F5"
+sleep 8
+
+sudo docker exec freecash-solo python3 -c "import json; d=json.load(open('/app/data/stats.json')); log=d.get('blocks_log') or []; print('disk log', len(log)); print('blocks found', d.get('blocks_found')); print('rewards', d.get('block_rewards_total')); assert len(log) <= 14400"
+
+echo "Done. Hard refresh the dashboard (Ctrl+F5)."
