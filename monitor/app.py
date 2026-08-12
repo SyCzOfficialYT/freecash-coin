@@ -62,11 +62,7 @@ def wallet_balances():
     return out
 
 def balances_merged(height, blocks_log, wbal):
-    """Confirmed after tip >= mature_at (14400), same as freecashd coinbaseMaturity.
-
-    Prefer blocks_log for solo finds (exact per-block maturity). Wallet can lag or
-    miss coinbases; we still take max(confirmed) so external receives show up.
-    """
+    """Confirmed after tip >= mature_at (14400), same as freecashd coinbaseMaturity."""
     immature_log = 0.0
     matured_log = 0.0
     for b in blocks_log or []:
@@ -198,8 +194,10 @@ def build_payload():
         "last_share_hash": stats.get("last_share_hash"),
         "share_diff_fmt": fmt_diff(share_diff),
         "payout_address": holding, "addr_ok": addr_ok, "addr_msg": addr_msg,
-        "round_height": stats.get("round_height"),
+        "round_height": stats.get("round_height") or height,
         "round_started_at": stats.get("round_started_at"),
+        "tip_changed_at": stats.get("tip_changed_at") or stats.get("round_started_at"),
+        "target_block_sec": 60,
         "network_diff": net_d,
         "blocks_log": list(reversed(mat))[:14400],
         "maturity_blocks": COINBASE_MATURITY,
