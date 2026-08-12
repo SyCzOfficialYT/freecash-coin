@@ -61,6 +61,32 @@ def wallet_balances():
         out["unconfirmed"] = out["immature"] + float(wi.get("unconfirmed_balance") or 0)
     return out
 
+def balances_merged(height, blocks_log, wbal):
+    """Confirmed after tip >= mature_at (14400), same as freecashd coinbaseMaturity.
+
+    Prefer blocks_log for solo finds (exact per-block maturity). Wallet can lag or
+    miss coinbases; we still take max(confirmed) so external receives show up.
+    """
+    immature_log = 0.0
+    matured_log = 0.0
+    for b in blocks_log or []:
+        bh = int(b.get("height") or 0)
+        rew = float(b.get("reward") or 0)
+        mature_at = int(b.get("mature_at_height") or (bh + COINBASE_MATURITY))
+        if height >= mature_at:
+            matured_log += rew
+        else:
+            immature_log += rew
+    w_conf = float(wbal.get("confirmed") or 0)
+    w_unc = float(wbal.get("unconfirmed") or 0)
+    if blocks_log:
+        confirmed = max(w_conf, matured_log)
+        unconfirmed = immature_log
+        if unconfirmed <= 0 and w_unc > 0 and matured_log <= 0:
+            unconfirmed = w_unc
+        return confirmed, unconfirmed
+    return w_conf, w_unc
+
 def maturity_info(height, blocks_log):
     rows = []
     for b in blocks_log or []:
@@ -89,10 +115,6 @@ def validate_holding(addr):
 
 def estimate_hashrate(stats, share_diff):
     try:
-        ok = float(stats.get("shares_ok") or 0)
-        if ok <= 0:
-            return 0.0
-        # crude: last N shares timing not always available
         return float(stats.get("est_hashrate") or 0)
     except Exception:
         return 0.0
@@ -117,29 +139,20 @@ def fmt_diff(d):
         d = float(d or 0)
     except Exception:
         return "0"
-    if d >= 1e9:
-        return f"{d/1e9:.2f} G"
-    if d >= 1e6:
-        return f"{d/1e6:.2f} M"
-    if d >= 1e3:
-        return f"{d/1e3:.2f} k"
+    if d >= 1e9: return f"{d/1e9:.2f} G"
+    if d >= 1e6: return f"{d/1e6:.2f} M"
+    if d >= 1e3: return f"{d/1e3:.2f} k"
     return f"{d:.2f}"
 
 def fmt_duration(sec):
-    if sec is None:
-        return "–"
-    try:
-        s = int(sec)
-    except Exception:
-        return "–"
-    if s < 0:
-        s = 0
+    if sec is None: return "–"
+    try: s = int(sec)
+    except Exception: return "–"
+    if s < 0: s = 0
     h, r = divmod(s, 3600)
     m, s = divmod(r, 60)
-    if h:
-        return f"{h}h {m}m"
-    if m:
-        return f"{m}m {s}s"
+    if h: return f"{h}h {m}m"
+    if m: return f"{m}m {s}s"
     return f"{s}s"
 
 def build_payload():
@@ -149,6 +162,8 @@ def build_payload():
     difficulty = float(tip.get("difficulty") or stats.get("network_diff") or 0)
     synced = bool(tip.get("blocks")) and tip.get("blocks") == tip.get("headers")
     wbal = wallet_balances()
+    blog = stats.get("blocks_log") or []
+    confirmed, unconfirmed = balances_merged(height, blog, wbal)
     shares_ok = stats.get("shares_ok") or 0
     shares_bad = stats.get("shares_bad") or 0
     total = shares_ok + shares_bad
@@ -164,13 +179,13 @@ def build_payload():
     eta = eta_seconds(net_d, hr) if hr else None
     holding = get_holding_address()
     addr_ok, addr_msg = validate_holding(holding)
-    mat = maturity_info(height, stats.get("blocks_log") or [])
+    mat = maturity_info(height, blog)
     return {
         "synced": synced, "height": height, "difficulty": difficulty,
         "difficulty_fmt": fmt_diff(net_d), "hashrate_fmt": fmt_hashrate(hr),
-        "confirmed": wbal["confirmed"], "unconfirmed": wbal["unconfirmed"],
-        "confirmed_fmt": f"{wbal['confirmed']:.8f}",
-        "unconfirmed_fmt": f"{wbal['unconfirmed']:.8f}",
+        "confirmed": confirmed, "unconfirmed": unconfirmed,
+        "confirmed_fmt": f"{confirmed:.8f}",
+        "unconfirmed_fmt": f"{unconfirmed:.8f}",
         "blocks_found": stats.get("blocks_found") or 0,
         "rewards": float(stats.get("block_rewards_total") or 0),
         "rewards_fmt": f"{float(stats.get('block_rewards_total') or 0):.8f}",
@@ -186,7 +201,7 @@ def build_payload():
         "round_height": stats.get("round_height"),
         "round_started_at": stats.get("round_started_at"),
         "network_diff": net_d,
-        "blocks_log": list(reversed(mat))[:14400],  # all blocks in maturity window
+        "blocks_log": list(reversed(mat))[:14400],
         "maturity_blocks": COINBASE_MATURITY,
         "recent_shares": list(reversed(stats.get("recent_shares") or []))[:50],
     }
@@ -214,6 +229,4 @@ def api_events():
 if __name__ == "__main__":
     host = os.environ.get("MONITOR_HOST", "0.0.0.0")
     port = int(os.environ.get("MONITOR_PORT", "5050"))
-    for p in (5000, 5001):
-        port = 5050
     app.run(host=host, port=port, debug=False)
