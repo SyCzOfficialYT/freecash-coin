@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-"""Rebuild the persistent solo block history from wallet coinbase rewards.
+"""Rebuild persistent solo block history from wallet rewards + existing logs.
 
-The history is intentionally bounded only at a large safety limit.  It is not
-used as the source of truth for blocks_found or block_rewards_total; those
-counters remain cumulative.
+Wallet generate/immature transactions are authoritative. Existing local log
+entries are preserved. No chain scan is performed here: a missing wallet entry
+must not be fabricated from a generic payout-address scan.
+
+The history is bounded at HISTORY_LIMIT, while blocks_found and
+block_rewards_total remain cumulative and are never decreased by the history
+window.
 """
 import json, os, sys
 from pathlib import Path
@@ -105,59 +109,13 @@ def main():
             "mature_at_height": bh + MATURITY,
         }
 
-        # Prefer the wallet's current reward information over stale local data.
         if bh not in found or float(found[bh].get("reward") or 0) < amt:
             found[bh] = entry
         print(f"  wallet {cat} h={bh} reward={amt}")
 
-    # Optional chain scan is only a recovery path.  It never replaces wallet
-    # history and is intentionally limited to the recent chain.
-    target = int(stats.get("blocks_found") or 0)
-    if payout and len(found) < max(target, 1):
-        scan_n = min(height, 20000)
-        print(f"scanning last {scan_n} blocks for coinbase -> {payout} ...")
-        for h in range(height, max(0, height - scan_n), -1):
-            if h in found:
-                continue
-            try:
-                bhash = rpc("getblockhash", [h])
-                blk = rpc("getblock", [bhash, 2])
-            except Exception:
-                continue
-
-            txs_b = blk.get("tx") or []
-            if not txs_b:
-                continue
-            cb = txs_b[0]
-            reward = 0.0
-            hit = False
-            for v in cb.get("vout") or []:
-                spk = v.get("scriptPubKey") or {}
-                addrs = list(spk.get("addresses") or [])
-                addr = spk.get("address")
-                if addr:
-                    addrs.append(addr)
-                if payout in addrs:
-                    hit = True
-                    reward += float(v.get("value") or 0)
-
-            if hit:
-                found[h] = {
-                    "ts": ts_fmt(blk.get("time")),
-                    "height": h,
-                    "hash": (blk.get("hash") or bhash)[:64],
-                    "reward": reward,
-                    "address": payout,
-                    "mature_at_height": h + MATURITY,
-                }
-                print(f"  chain hit h={h} reward={reward}")
-
-    # Keep the complete recent history, not the old 20-entry dashboard cache.
     blog = [found[h] for h in sorted(found.keys())][-HISTORY_LIMIT:]
     stats["blocks_log"] = blog
 
-    # Cumulative counters must never decrease merely because the history window
-    # is bounded.  The wallet-derived history is used to repair missing totals.
     history_count = len(found)
     stats["blocks_found"] = max(int(stats.get("blocks_found") or 0), history_count)
 
